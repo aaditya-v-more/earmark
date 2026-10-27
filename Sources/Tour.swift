@@ -198,9 +198,19 @@ private final class TourCard: NSViewController {
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
-        stack.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 12, right: 16)
         row.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
-        view = stack
+        // Explicit margins: a popover sizes to its root view and ignores a stack view's own insets.
+        let container = NSView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 16),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -14),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
+        ])
+        view = container
+        preferredContentSize = container.fittingSize
     }
 
     @objc private func nexted() { onNext?() }
