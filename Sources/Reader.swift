@@ -144,15 +144,19 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
         chapterMenu.action = #selector(chapterChosen)
         voiceMenu.action = #selector(voiceChosen)
         speedMenu.action = #selector(speedChosen)
-        // When space runs out, the status line gives way first, then the chapter title.
-        chapterMenu.setContentCompressionResistancePriority(.init(240), for: .horizontal)
+        // When space runs out the chapter title gives way first (shortened with "…"), so the
+        // progress next to it and the voice stay readable. It never takes more than 260 points.
+        chapterMenu.setContentCompressionResistancePriority(.init(200), for: .horizontal)
         voiceMenu.setContentCompressionResistancePriority(.init(260), for: .horizontal)
         voiceMenu.widthAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
         chapterMenu.widthAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
+        chapterMenu.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true
+        (chapterMenu.cell as? NSPopUpButtonCell)?.lineBreakMode = .byTruncatingTail
+        (voiceMenu.cell as? NSPopUpButtonCell)?.lineBreakMode = .byTruncatingTail
         status.font = .systemFont(ofSize: 11)
         status.textColor = .secondaryLabelColor
         status.lineBreakMode = .byTruncatingTail
-        status.setContentCompressionResistancePriority(.init(100), for: .horizontal)
+        status.setContentCompressionResistancePriority(.init(300), for: .horizontal)
 
         let controls = NSStackView(views: [
             icon("backward.fill", "Previous sentence", #selector(previousSentence)),
@@ -288,8 +292,7 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
         guard Date() >= messageUntil, let book else { return }
         var parts: [String] = []
         let total = book.chapterCount
-        let unit = book.pdf != nil ? "p." : "ch."
-        parts.append("\(unit) \(chapter + 1)/\(total)")
+        parts.append(book.pdf != nil ? "p. \(chapter + 1)/\(total)" : "\(chapter + 1)/\(total)")
         let within = sentences.isEmpty ? 0 : Double(sentence) / Double(sentences.count)
         parts.append("\(Int(((Double(chapter) + within) / Double(max(total, 1)) * 100).rounded()))%")
         if let fallbackNote { parts.append(fallbackNote) }
