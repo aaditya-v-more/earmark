@@ -77,7 +77,7 @@ final class Book {
 
     private static func unpack(_ file: URL, id: String) throws -> URL {
         let cache = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Earmark/books", isDirectory: true)
+            .appendingPathComponent("\(appName)/books", isDirectory: true)
         let dest = cache.appendingPathComponent(id, isDirectory: true)
         if FileManager.default.fileExists(atPath: dest.appendingPathComponent("META-INF/container.xml").path) {
             return dest

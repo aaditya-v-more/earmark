@@ -65,6 +65,11 @@ cd earmark
 ./build.sh        # writes build/Earmark.app
 ```
 
+`DEV=1 ./build.sh` builds **Earmark Dev** instead, with its own settings,
+caches and process name, so a test copy can run next to an installed Earmark.
+`defaults write com.aadityavmore.earmark.dev mute -bool true` makes it play
+silently while still moving the highlights.
+
 ## Reading
 
 Open a book with **⌘O**, by dragging it onto the Dock icon, or with
@@ -129,8 +134,9 @@ current one plays, so there are no gaps.
 | `speed` | `engine` passes the speed to the plugin as `rate`. `player` speeds up playback instead, up to 2×. |
 | `enabled` | `false` hides the plugin. |
 
-Plugins return audio only, so the word highlight is estimated from word
-lengths and punctuation pauses. It stays close for most voices.
+Plugins return audio only, so Earmark times the words from the audio itself.
+It finds the pauses the voice makes, matches them to the sentence's
+punctuation, and spreads the words between two pauses by syllable count.
 
 The first entry works with
 [google-tts-local](https://github.com/aaditya-v-more/google-tts-local), which
@@ -142,8 +148,8 @@ book's language. Its `sfg` voice is the default US English voice on Android.
 
 Earmark unzips each book once into `~/Library/Caches/Earmark` and shows
 chapters in a WebKit view with a reading stylesheet on top. A small script
-splits the chapter into sentences with `Intl.Segmenter`. It highlights them
-with the CSS Custom Highlight API, so the book's own markup is never
+splits the chapter into sentences with `Intl.Segmenter`. It paints the
+highlights in a layer behind the text, so the book's own markup is never
 changed. System voices speak through `AVSpeechSynthesizer`, and plugin audio
 plays through `AVAudioPlayer`.
 

@@ -1,6 +1,9 @@
 import AVFoundation
 import Foundation
 
+/// Plays silently while still timing words, for testing next to a running copy (`defaults write <id> mute -bool true`).
+private var muted: Bool { UserDefaults.standard.bool(forKey: "mute") }
+
 /// Speaks one sentence at a time and reports which word is being spoken.
 protocol SpeechEngine: AnyObject {
     var onWord: ((NSRange) -> Void)? { get set }
@@ -33,6 +36,7 @@ final class SystemEngine: NSObject, SpeechEngine, AVSpeechSynthesizerDelegate {
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = voice
         utterance.rate = Self.rate(for: speed)
+        if muted { utterance.volume = 0 }
         current = utterance
         synth.stopSpeaking(at: .immediate)
         synth.speak(utterance)
@@ -81,7 +85,7 @@ struct PluginConfig: Codable {
 
     static var file: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Earmark/engines.json")
+            .appendingPathComponent("\(appName)/engines.json")
     }
 
     static let example = """
@@ -228,8 +232,9 @@ final class PluginEngine: SpeechEngine {
             player.enableRate = true
             player.rate = Float(min(speed, 2))
         }
+        if muted { player.volume = 0 }
         self.player = player
-        words = Self.estimateWordStarts(text, duration: player.duration)
+        words = WordTiming.align(text, audio: data)
         lastWord = -1
         player.prepareToPlay()
         player.play()
@@ -257,31 +262,6 @@ final class PluginEngine: SpeechEngine {
         if i != lastWord, i >= 0 {
             lastWord = i
             onWord?(words[i].range)
-        }
-    }
-
-    /// Plugins return audio only, so word timings are estimated from word length and punctuation pauses.
-    static func estimateWordStarts(_ text: String, duration: Double) -> [(range: NSRange, start: Double)] {
-        let ns = text as NSString
-        var ranges: [NSRange] = []
-        ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: .byWords) { _, r, _, _ in
-            ranges.append(r)
-        }
-        guard !ranges.isEmpty else { return [] }
-        var weights: [Double] = []
-        for (i, r) in ranges.enumerated() {
-            let gapEnd = i + 1 < ranges.count ? ranges[i + 1].location : ns.length
-            let gap = ns.substring(with: NSRange(location: r.upperBound, length: gapEnd - r.upperBound))
-            var w = Double(r.length) + 1.5
-            if gap.contains(where: { ".!?…".contains($0) }) { w += 5 }
-            else if gap.contains(where: { ",;:—–".contains($0) }) { w += 3 }
-            weights.append(w)
-        }
-        let total = weights.reduce(0, +)
-        var t = 0.0
-        return zip(ranges, weights).map { r, w in
-            defer { t += w / total * duration }
-            return (r, t)
         }
     }
 

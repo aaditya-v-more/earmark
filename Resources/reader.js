@@ -54,6 +54,47 @@
     return r;
   }
 
+  // Highlights are painted as boxes in a layer behind the text. (WebKit's CSS
+  // highlight API sometimes left stale paint behind after scrolling.)
+  const XHTML = 'http://www.w3.org/1999/xhtml';
+  const body = document.body || document.documentElement;
+  const layer = document.createElementNS(XHTML, 'div');
+  layer.id = 'em-layer';
+  body.insertBefore(layer, body.firstChild);
+
+  function lineBoxes(range) {
+    const rects = [...range.getClientRects()].filter(r => r.width > 0.5 && r.height > 0.5)
+      .sort((a, b) => a.top - b.top || a.left - b.left);
+    const lines = [];
+    for (const r of rects) {
+      const last = lines[lines.length - 1];
+      if (last && Math.abs(r.top - last.top) < r.height / 2 && r.left <= last.right + 2) {
+        last.right = Math.max(last.right, r.right);
+        last.top = Math.min(last.top, r.top);
+        last.bottom = Math.max(last.bottom, r.bottom);
+      } else {
+        lines.push({ left: r.left, right: r.right, top: r.top, bottom: r.bottom });
+      }
+    }
+    return lines;
+  }
+
+  function paint(kind, range) {
+    for (const old of [...layer.children]) if (old.dataset.kind === kind) old.remove();
+    if (!range) return;
+    const origin = layer.getBoundingClientRect();
+    for (const b of lineBoxes(range)) {
+      const box = document.createElementNS(XHTML, 'div');
+      box.dataset.kind = kind;
+      box.className = 'em-' + kind;
+      box.style.left = (b.left - origin.left - 2) + 'px';
+      box.style.top = (b.top - origin.top - 1) + 'px';
+      box.style.width = (b.right - b.left + 4) + 'px';
+      box.style.height = (b.bottom - b.top + 2) + 'px';
+      layer.appendChild(box);
+    }
+  }
+
   function reveal(range) {
     const rect = range.getBoundingClientRect();
     const margin = innerHeight * 0.18;
@@ -63,20 +104,31 @@
   }
 
   let current = -1;
+  let word = null;
+  function repaint() {
+    const s = sentences[current];
+    paint('sentence', s ? rangeOf(s[0], s[1]) : null);
+    paint('word', word ? rangeOf(word[0], word[1]) : null);
+  }
+  addEventListener('resize', repaint);
+  addEventListener('load', repaint);
+
   window.earmark = {
     highlight(index, wordStart, wordLength) {
       const s = sentences[index];
       if (!s) return;
       if (index !== current) {
         current = index;
+        word = null;
         const r = rangeOf(s[0], s[1]);
-        CSS.highlights.set('em-sentence', new Highlight(r));
-        CSS.highlights.delete('em-word');
+        paint('sentence', r);
+        paint('word', null);
         reveal(r);
       }
       if (wordLength > 0) {
-        const r = rangeOf(s[0] + wordStart, Math.min(s[0] + wordStart + wordLength, s[1]));
-        CSS.highlights.set('em-word', new Highlight(r));
+        word = [s[0] + wordStart, Math.min(s[0] + wordStart + wordLength, s[1])];
+        const r = rangeOf(word[0], word[1]);
+        paint('word', r);
         reveal(r);
       }
     },
@@ -100,9 +152,15 @@
         || rangeOf(s[0], s[1]).intersectsNode(el));
       return Math.max(index, 0);
     },
+    // What is highlighted now, as text (used by the debug log).
+    state() {
+      const s = sentences[current];
+      return (s ? flat.slice(s[0], s[1]) : '') + ' || ' + (word ? flat.slice(word[0], word[1]) : '');
+    },
     clear() {
       current = -1;
-      CSS.highlights.clear();
+      word = null;
+      repaint();
     },
   };
 

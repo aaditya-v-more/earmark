@@ -7,7 +7,7 @@ enum Debug {
 
     static func logHighlight(_ web: WKWebView) {
         guard dir != nil else { return }
-        let js = "[...(CSS.highlights.get('em-sentence') || [])].map(String).join('') + ' || ' + [...(CSS.highlights.get('em-word') || [])].map(String).join('')"
+        let js = "earmark.state()"
         web.evaluateJavaScript(js) { result, _ in
             FileHandle.standardError.write(Data("highlight: \(result ?? "")\n".utf8))
         }

@@ -1,6 +1,9 @@
 import AppKit
 import UniformTypeIdentifiers
 
+/// The bundle's name, so a development build keeps its own settings and caches.
+let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Earmark"
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var reader = ReaderController()
     private var openedAtLaunch = false
@@ -65,11 +68,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             i.target = target
             return i
         }
-        submenu("Earmark", [
-            item("About Earmark", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""),
+        submenu(appName, [
+            item("About \(appName)", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""),
             .separator(),
-            item("Hide Earmark", #selector(NSApplication.hide(_:)), "h"),
-            item("Quit Earmark", #selector(NSApplication.terminate(_:)), "q"),
+            item("Hide \(appName)", #selector(NSApplication.hide(_:)), "h"),
+            item("Quit \(appName)", #selector(NSApplication.terminate(_:)), "q"),
         ])
         submenu("File", [
             item("Open…", #selector(openDocument(_:)), "o", target: self),

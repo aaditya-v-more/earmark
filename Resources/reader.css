@@ -10,11 +10,14 @@ body {
 p, li, div, span, blockquote { font-family: inherit !important; }
 img, svg { max-width: 100%; height: auto; }
 a { color: inherit; }
-::highlight(em-sentence) { background-color: rgba(250, 204, 21, 0.26); }
-::highlight(em-word) { background-color: rgba(234, 120, 20, 0.55); }
+body { position: relative !important; z-index: 0; }
+#em-layer { position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: -1; pointer-events: none; }
+#em-layer > div { position: absolute; display: block; margin: 0; padding: 0; border: 0; border-radius: 4px; }
+.em-sentence { background: rgba(250, 204, 21, 0.24); }
+.em-word { background: rgba(234, 120, 20, 0.5); }
 
 @media (prefers-color-scheme: dark) {
   html, body { background: #1B1B1D !important; color: #E4E2DD !important; }
-  ::highlight(em-sentence) { background-color: rgba(250, 204, 21, 0.16); }
-  ::highlight(em-word) { background-color: rgba(234, 120, 20, 0.5); }
+  .em-sentence { background: rgba(250, 204, 21, 0.15); }
+  .em-word { background: rgba(234, 120, 20, 0.45); }
 }

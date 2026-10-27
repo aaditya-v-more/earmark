@@ -56,7 +56,7 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
                               backing: .buffered, defer: false)
         window.titlebarAppearsTransparent = true
         window.minSize = NSSize(width: 420, height: 320)
-        window.title = "Earmark"
+        window.title = appName
         super.init(window: window)
         config.userContentController.add(self, name: "earmark")
         web.navigationDelegate = self
