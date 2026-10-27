@@ -159,6 +159,8 @@
         || rangeOf(s[0], s[1]).intersectsNode(el));
       return Math.max(index, 0);
     },
+    // Redraws the highlight boxes after the text reflows (new size or width).
+    repaint() { repaint(); },
     // What is highlighted now, as text (used by the debug log).
     state() {
       const s = sentences[current];

@@ -285,7 +285,8 @@ final class PluginEngine: SpeechEngine {
         let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
-        // Common modes keep it running while a menu is open.
+        // Common modes keep it running while a menu is open; a little slack lets the system batch wake-ups.
+        timer.tolerance = 0.01
         RunLoop.main.add(timer, forMode: .common)
         ticker = timer
     }

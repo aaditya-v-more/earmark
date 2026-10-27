@@ -132,6 +132,64 @@ enum WordTiming {
 
     /// RMS loudness in 10 ms steps, and the step length in seconds.
     private static func envelope(_ data: Data) -> ([Float], Double)? {
+        guard let (samples, rate) = pcm(data) ?? decodeWithAVFoundation(data), !samples.isEmpty else { return nil }
+        let hop = max(1, Int(rate / 100))
+        var env: [Float] = []
+        env.reserveCapacity(samples.count / hop + 1)
+        var i = 0
+        while i < samples.count {
+            let n = min(hop, samples.count - i)
+            var sum: Float = 0
+            for k in i..<(i + n) { sum += samples[k] * samples[k] }
+            env.append((sum / Float(n)).squareRoot())
+            i += hop
+        }
+        return (env, Double(hop) / rate)
+    }
+
+    /// Reads a plain WAV file in memory: 8/16/24/32-bit integer or 32-bit float PCM, first channel.
+    private static func pcm(_ data: Data) -> ([Float], Double)? {
+        let bytes = [UInt8](data)
+        func u32(_ o: Int) -> Int { Int(bytes[o]) | Int(bytes[o + 1]) << 8 | Int(bytes[o + 2]) << 16 | Int(bytes[o + 3]) << 24 }
+        func u16(_ o: Int) -> Int { Int(bytes[o]) | Int(bytes[o + 1]) << 8 }
+        guard bytes.count > 44, bytes[0..<4] == [0x52, 0x49, 0x46, 0x46], bytes[8..<12] == [0x57, 0x41, 0x56, 0x45] else { return nil }
+        var offset = 12
+        var format = 0, channels = 0, rate = 0, bits = 0
+        while offset + 8 <= bytes.count {
+            let id = String(decoding: bytes[offset..<offset + 4], as: UTF8.self)
+            let size = u32(offset + 4)
+            let body = offset + 8
+            if id == "fmt ", body + 16 <= bytes.count {
+                format = u16(body); channels = u16(body + 2); rate = u32(body + 4); bits = u16(body + 14)
+                if format == 0xFFFE, body + 26 <= bytes.count { format = u16(body + 24) }  // extensible: real format in the GUID
+            } else if id == "data" {
+                guard channels > 0, rate > 0, [8, 16, 24, 32].contains(bits), format == 1 || (format == 3 && bits == 32) else { return nil }
+                let width = bits / 8, frame = width * channels
+                let end = min(body + size, bytes.count)
+                var out: [Float] = []
+                out.reserveCapacity((end - body) / frame)
+                var o = body
+                while o + width <= end {
+                    switch (format, bits) {
+                    case (3, 32): out.append(Float(bitPattern: UInt32(u32(o))))
+                    case (_, 8): out.append((Float(bytes[o]) - 128) / 128)
+                    case (_, 16): out.append(Float(Int16(bitPattern: UInt16(u16(o)))) / 32768)
+                    case (_, 24):
+                        let v = Int32(bitPattern: UInt32(bytes[o]) << 8 | UInt32(bytes[o + 1]) << 16 | UInt32(bytes[o + 2]) << 24) >> 8
+                        out.append(Float(v) / 8_388_608)
+                    default: out.append(Float(Int32(bitPattern: UInt32(u32(o)))) / 2_147_483_648)
+                    }
+                    o += frame
+                }
+                return (out, Double(rate))
+            }
+            offset = body + size + (size & 1)
+        }
+        return nil
+    }
+
+    /// Anything else (compressed or unusual WAV) goes through AVFoundation via a temporary file.
+    private static func decodeWithAVFoundation(_ data: Data) -> ([Float], Double)? {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
         defer { try? FileManager.default.removeItem(at: url) }
         guard (try? data.write(to: url)) != nil,
@@ -139,19 +197,6 @@ enum WordTiming {
               let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length)),
               (try? file.read(into: buffer)) != nil,
               let samples = buffer.floatChannelData?[0] else { return nil }
-        let rate = file.processingFormat.sampleRate
-        let hop = max(1, Int(rate / 100))
-        let count = Int(buffer.frameLength)
-        var env: [Float] = []
-        env.reserveCapacity(count / hop + 1)
-        var i = 0
-        while i < count {
-            let n = min(hop, count - i)
-            var sum: Float = 0
-            for k in 0..<n { sum += samples[i + k] * samples[i + k] }
-            env.append((sum / Float(n)).squareRoot())
-            i += hop
-        }
-        return (env, Double(hop) / rate)
+        return (Array(UnsafeBufferPointer(start: samples, count: Int(buffer.frameLength))), file.processingFormat.sampleRate)
     }
 }

@@ -23,6 +23,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if Debug.dir != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self.reader.debugSnapshot("1-loaded"); self.reader.togglePlay() }
             DispatchQueue.main.asyncAfter(deadline: .now() + 6) { self.reader.debugSnapshot("2-playing") }
+            if let text = ProcessInfo.processInfo.environment["EARMARK_DEBUG_FIND"] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.reader.debugFind(text) }
+            }
         }
         if !openedAtLaunch, let last = UserDefaults.standard.string(forKey: "lastBook"),
            FileManager.default.fileExists(atPath: last) {
@@ -57,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let recentMenu = NSMenu(title: "Open Recent")
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === bookmarksMenu { return fillBookmarks(menu) }
         guard menu === recentMenu else { return }
         menu.removeAllItems()
         for url in NSDocumentController.shared.recentDocumentURLs where FileManager.default.fileExists(atPath: url.path) {
@@ -76,6 +80,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let clear = NSMenuItem(title: "Clear Menu", action: #selector(NSDocumentController.clearRecentDocuments(_:)), keyEquivalent: "")
         clear.target = NSDocumentController.shared
         menu.addItem(clear)
+    }
+
+    // Bookmarks: the current book's, filled each time the menu opens.
+    private let bookmarksMenu = NSMenu(title: "Bookmarks")
+
+    private func fillBookmarks(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let add = NSMenuItem(title: "Add Bookmark", action: #selector(ReaderController.addBookmark), keyEquivalent: "d")
+        add.target = reader
+        menu.addItem(add)
+        menu.addItem(.separator())
+        let marks = reader.bookmarks()
+        for (i, b) in marks.enumerated() {
+            let item = NSMenuItem(title: b.title, action: #selector(openBookmark(_:)), keyEquivalent: "")
+            item.tag = i
+            item.target = self
+            menu.addItem(item)
+        }
+        if marks.isEmpty {
+            let none = NSMenuItem(title: "No Bookmarks", action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            menu.addItem(none)
+        } else {
+            menu.addItem(.separator())
+            let clear = NSMenuItem(title: "Clear Bookmarks for This Book", action: #selector(ReaderController.clearBookmarks), keyEquivalent: "")
+            clear.target = reader
+            menu.addItem(clear)
+        }
+    }
+
+    @objc func openBookmark(_ sender: NSMenuItem) {
+        let marks = reader.bookmarks()
+        guard marks.indices.contains(sender.tag) else { return }
+        reader.openBookmark(chapter: marks[sender.tag].chapter, sentence: marks[sender.tag].sentence)
     }
 
     @objc func openRecent(_ sender: NSMenuItem) {
@@ -144,11 +182,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item("Reload Settings", #selector(reloadPlugins(_:)), "r", target: self),
             item("Close", #selector(NSWindow.performClose(_:)), "w"),
         ])
+        let r = reader
         submenu("Edit", [
             item("Copy", #selector(NSText.copy(_:)), "c"),
+            item("Paste", #selector(NSText.paste(_:)), "v"),
             item("Select All", #selector(NSText.selectAll(_:)), "a"),
+            .separator(),
+            item("Find in Chapter…", #selector(ReaderController.showFind), "f", target: r),
         ])
-        let r = reader
+        submenu("View", [
+            item("Bigger Text", #selector(ReaderController.biggerText), "=", [.command, .option], target: r),
+            item("Smaller Text", #selector(ReaderController.smallerText), "-", [.command, .option], target: r),
+            item("Wider Column", #selector(ReaderController.widerColumn), "]", [.command, .option], target: r),
+            item("Narrower Column", #selector(ReaderController.narrowerColumn), "[", [.command, .option], target: r),
+            item("Actual Size", #selector(ReaderController.actualSize), "0", [.command, .option], target: r),
+        ])
         submenu("Playback", [
             item("Play / Pause", #selector(ReaderController.togglePlay), "p", target: r),
             .separator(),
@@ -163,6 +211,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .separator(),
             sleepMenu(r),
         ])
+        bookmarksMenu.delegate = self
+        fillBookmarks(bookmarksMenu)
+        let marks = NSMenuItem(title: "Bookmarks", action: nil, keyEquivalent: "")
+        marks.submenu = bookmarksMenu
+        main.addItem(marks)
         submenu("Window", [
             item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"),
             item("Zoom", #selector(NSWindow.performZoom(_:)), ""),

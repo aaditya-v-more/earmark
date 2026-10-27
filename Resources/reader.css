@@ -1,10 +1,10 @@
-:root { color-scheme: light dark; }
+:root { color-scheme: light dark; --em-size: 19px; --em-width: 36em; }
 html, body { background: #FAF8F3 !important; color: #222 !important; }
 body {
-  max-width: 36em;
+  max-width: var(--em-width) !important;
   margin: 0 auto !important;
   padding: 2.5em 1.75em 45vh !important;
-  font: 19px/1.65 "Iowan Old Style", "Palatino", Georgia, serif !important;
+  font: var(--em-size)/1.65 "Iowan Old Style", "Palatino", Georgia, serif !important;
   -webkit-font-smoothing: antialiased;
 }
 p, li, div, span, blockquote { font-family: inherit !important; }

@@ -1,9 +1,10 @@
 import AppKit
 import AVFoundation
+import CoreAudio
 import MediaPlayer
 
 /// The single reading window: the book on top, a slim control bar below.
-final class ReaderController: NSWindowController {
+final class ReaderController: NSWindowController, NSSearchFieldDelegate {
     private let webSurface = WebSurface()
     private let pdfSurface = PDFSurface()
     private var surface: Surface
@@ -13,6 +14,7 @@ final class ReaderController: NSWindowController {
     private let speedMenu = NSPopUpButton()
     private let playButton = NSButton()
     private let status = NSTextField(labelWithString: "")
+    private let findField = NSSearchField()
 
     private var book: Book?
     private var chapter = 0
@@ -48,6 +50,16 @@ final class ReaderController: NSWindowController {
         set { defaults.set(newValue, forKey: "speed") }
     }
 
+    private var textSize: Int {
+        get { defaults.object(forKey: "textSize") as? Int ?? 19 }
+        set { defaults.set(newValue, forKey: "textSize") }
+    }
+
+    private var columnWidth: Int {
+        get { defaults.object(forKey: "columnWidth") as? Int ?? 36 }
+        set { defaults.set(newValue, forKey: "columnWidth") }
+    }
+
     private var voiceKey: String? {
         get { defaults.string(forKey: "voice") }
         set { defaults.set(newValue, forKey: "voice") }
@@ -76,6 +88,8 @@ final class ReaderController: NSWindowController {
         reloadPlugins()
         rebuildSpeedMenu()
         setUpMediaKeys()
+        watchOutputDevice()
+        webSurface.setLayout(size: textSize, width: columnWidth)
         NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             // Reading back up: let the page stay where the reader put it for a few seconds.
             self?.lastManualScroll = Date()
@@ -128,7 +142,16 @@ final class ReaderController: NSWindowController {
             icon("forward.fill", "Next sentence", #selector(nextSentence)),
         ])
         controls.spacing = 14
-        let bar = DragStack(views: [chapterMenu, status, NSView(), controls, NSView(), voiceMenu, speedMenu])
+        findField.placeholderString = "Find in chapter"
+        findField.controlSize = .small
+        findField.font = .systemFont(ofSize: 12)
+        findField.delegate = self
+        findField.sendsSearchStringImmediately = false
+        findField.isHidden = true
+        findField.target = self
+        findField.action = #selector(findFieldReturned)
+        findField.widthAnchor.constraint(equalToConstant: 170).isActive = true
+        let bar = DragStack(views: [chapterMenu, status, findField, NSView(), controls, NSView(), voiceMenu, speedMenu])
         bar.spacing = 10
         bar.edgeInsets = NSEdgeInsets(top: 6, left: 14, bottom: 6, right: 14)
         bar.setHuggingPriority(.defaultHigh, for: .vertical)
@@ -705,6 +728,135 @@ final class ReaderController: NSWindowController {
         sleepTimer?.cancel()
         sleepTimer = nil
         sleepDeadline = nil
+    }
+
+    // MARK: - Text size and column width
+
+    @objc func biggerText() { setText(size: textSize + 2) }
+    @objc func smallerText() { setText(size: textSize - 2) }
+    @objc func widerColumn() { setText(width: columnWidth + 4) }
+    @objc func narrowerColumn() { setText(width: columnWidth - 4) }
+
+    @objc func actualSize() {
+        if surface === pdfSurface { return pdfSurface.zoom(0) }
+        setText(size: 19, width: 36)
+    }
+
+    private func setText(size: Int? = nil, width: Int? = nil) {
+        if surface === pdfSurface {
+            // A PDF's layout is fixed: size zooms it instead.
+            if let size { pdfSurface.zoom(size > textSize ? 1 : -1) }
+            return
+        }
+        textSize = min(max(size ?? textSize, 13), 40)
+        columnWidth = min(max(width ?? columnWidth, 20), 80)
+        webSurface.setLayout(size: textSize, width: columnWidth)
+    }
+
+    // MARK: - Find
+
+    @objc func showFind() {
+        findField.isHidden = false
+        status.isHidden = true
+        window?.makeFirstResponder(findField)
+    }
+
+    private func hideFind() {
+        findField.isHidden = true
+        status.isHidden = false
+        window?.makeFirstResponder(surface.view)
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        switch selector {
+        case #selector(NSResponder.insertNewline(_:)):
+            // Return finds the next match, Shift-Return the previous one.
+            find(backwards: NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false)
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            hideFind()
+            return true
+        default:
+            return false
+        }
+    }
+
+    @objc private func findFieldReturned() { find(backwards: false) }
+
+    func debugFind(_ text: String) {
+        findField.stringValue = text
+        showFind()
+        find(backwards: false)
+    }
+
+    private func find(backwards: Bool) {
+        let text = findField.stringValue
+        guard !text.isEmpty else { return }
+        if surface === pdfSurface {
+            if !pdfSurface.find(text, backwards: backwards) { NSSound.beep() }
+        } else {
+            webSurface.find(text, backwards: backwards) { found in if !found { NSSound.beep() } }
+        }
+    }
+
+    // MARK: - Bookmarks
+
+    private var bookmarkKey: String? { book.map { "bookmarks." + $0.positionID } }
+
+    /// This book's bookmarks, newest first: title, chapter, sentence.
+    func bookmarks() -> [(title: String, chapter: Int, sentence: Int)] {
+        guard let key = bookmarkKey, let list = defaults.array(forKey: key) as? [[String: Any]] else { return [] }
+        return list.compactMap { b in
+            guard let c = b["chapter"] as? Int, let s = b["sentence"] as? Int else { return nil }
+            return (b["title"] as? String ?? "Bookmark", c, s)
+        }
+    }
+
+    @objc func addBookmark() {
+        guard let key = bookmarkKey, sentences.indices.contains(sentence) else { return }
+        let place = chapterMenu.selectedItem?.title ?? "\(chapter + 1)"
+        let snippet = sentences[sentence].prefix(50)
+        var list = defaults.array(forKey: key) as? [[String: Any]] ?? []
+        let title = snippet.hasPrefix(place) || place.hasPrefix(snippet) ? String(snippet) : "\(place): \(snippet)…"
+        list.insert(["title": title, "chapter": chapter, "sentence": sentence], at: 0)
+        defaults.set(Array(list.prefix(50)), forKey: key)
+        say("Bookmarked")
+    }
+
+    func openBookmark(chapter target: Int, sentence index: Int) {
+        seek(chapter: target, sentence: index)
+    }
+
+    @objc func clearBookmarks() {
+        if let key = bookmarkKey { defaults.removeObject(forKey: key) }
+    }
+
+    // MARK: - Headphones
+
+    /// Pauses when the sound would switch to the built-in speakers, as when headphones are unplugged.
+    private func watchOutputDevice() {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                                                 mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main) { [weak self] _, _ in
+            guard let self, self.playing, !self.paused, Self.outputIsBuiltIn() else { return }
+            self.togglePlay()
+            self.say("Paused: headphones disconnected")
+        }
+    }
+
+    private static func outputIsBuiltIn() -> Bool {
+        var device = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                                                 mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device) == noErr else { return false }
+        var transport = UInt32(0)
+        size = UInt32(MemoryLayout<UInt32>.size)
+        address.mSelector = kAudioDevicePropertyTransportType
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &transport) == noErr else { return false }
+        return transport == kAudioDeviceTransportTypeBuiltIn
     }
 
     // MARK: - Media keys and Now Playing

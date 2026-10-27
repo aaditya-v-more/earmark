@@ -26,23 +26,52 @@ final class WebSurface: NSObject, Surface, WKScriptMessageHandler, WKNavigationD
     var onLink: ((URL) -> Void)?
     private var chapter = 0
 
+    private let styleScript: String
+    private let readerScript: String
+    private var layoutScript = ""
+
     override init() {
         let config = WKWebViewConfiguration()
         let bundle = Bundle.main
-        let js = (try? String(contentsOf: bundle.url(forResource: "reader", withExtension: "js")!, encoding: .utf8)) ?? ""
+        readerScript = (try? String(contentsOf: bundle.url(forResource: "reader", withExtension: "js")!, encoding: .utf8)) ?? ""
         let css = (try? String(contentsOf: bundle.url(forResource: "reader", withExtension: "css")!, encoding: .utf8)) ?? ""
         let cssLiteral = String(data: try! JSONSerialization.data(withJSONObject: [css], options: [.fragmentsAllowed]), encoding: .utf8)!
-        let style = """
+        styleScript = """
         (() => { const s = document.createElementNS('http://www.w3.org/1999/xhtml', 'style');
           s.textContent = \(cssLiteral)[0];
           (document.head || document.documentElement).appendChild(s); })();
         """
-        config.userContentController.addUserScript(WKUserScript(source: style, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
-        config.userContentController.addUserScript(WKUserScript(source: js, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         web = WKWebView(frame: .zero, configuration: config)
         super.init()
+        installScripts()
         config.userContentController.add(self, name: "earmark")
         web.navigationDelegate = self
+    }
+
+    private func installScripts() {
+        let controller = web.configuration.userContentController
+        controller.removeAllUserScripts()
+        for source in [styleScript, layoutScript, readerScript] where !source.isEmpty {
+            controller.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        }
+    }
+
+    /// Text size in points and column width in ems: for this page now, and every page after.
+    func setLayout(size: Int, width: Int) {
+        layoutScript = """
+        document.documentElement.style.setProperty('--em-size', '\(size)px');
+        document.documentElement.style.setProperty('--em-width', '\(width)em');
+        """
+        installScripts()
+        web.evaluateJavaScript(layoutScript + "window.earmark && earmark.repaint();")
+    }
+
+    /// Finds text in this chapter, wrapping around; false if it isn't there.
+    func find(_ text: String, backwards: Bool, done: @escaping (Bool) -> Void) {
+        let config = WKFindConfiguration()
+        config.backwards = backwards
+        config.wraps = true
+        web.find(text, configuration: config) { result in done(result.matchFound) }
     }
 
     func show(_ book: Book, chapter: Int) {
@@ -152,6 +181,32 @@ final class PDFSurface: Surface {
             pdfView.go(to: target, on: page)
         }
     }
+
+    /// Zooms the page in or out; zero goes back to fitting the window.
+    func zoom(_ step: Int) {
+        if step == 0 {
+            pdfView.autoScales = true
+        } else {
+            pdfView.autoScales = false
+            pdfView.scaleFactor *= step > 0 ? 1.1 : 1 / 1.1
+        }
+    }
+
+    /// Finds text anywhere in the PDF after the current match, wrapping around.
+    func find(_ text: String, backwards: Bool) -> Bool {
+        guard let doc = pdfView.document else { return false }
+        var options: NSString.CompareOptions = [.caseInsensitive]
+        if backwards { options.insert(.backwards) }
+        let found = doc.findString(text, fromSelection: lastFound, withOptions: options)
+            ?? doc.findString(text, fromSelection: nil, withOptions: options)
+        lastFound = found
+        guard let found else { return false }
+        pdfView.setCurrentSelection(found, animate: true)
+        pdfView.scrollSelectionToVisible(nil)
+        return true
+    }
+
+    private var lastFound: PDFSelection?
 
     func upcoming(_ book: Book, chapter: Int, count: Int, done: @escaping ([String]) -> Void) {
         guard let page = book.pdf?.page(at: chapter) else { return done([]) }

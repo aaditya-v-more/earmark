@@ -87,6 +87,10 @@ is tied to the book itself, so moving or re-downloading the file keeps it.
 | ⌘] / ⌘[ | Next / previous chapter |
 | ⌘G | Go to a chapter by number or title (a page, in a PDF) |
 | ⌘= / ⌘- | Faster / slower |
+| ⌥⌘= / ⌥⌘- | Bigger / smaller text (zoom, in a PDF) |
+| ⌥⌘] / ⌥⌘[ | Wider / narrower column |
+| ⌘F | Find in the chapter (the whole PDF); Return for the next match, Shift-Return for the previous |
+| ⌘D | Bookmark the current sentence; the Bookmarks menu lists them |
 | Media keys | Play / pause, next / previous sentence, from the keyboard, AirPods or Control Center |
 
 Click any sentence to start reading from it. The status line shows where you
@@ -98,7 +102,8 @@ pause of more than 30 seconds, the sentence starts over. Drag the window by
 its top edge or the empty parts of the control bar.
 
 **Playback → Sleep Timer** stops after 15 to 60 minutes, or at the end of the
-chapter. Light and dark mode follow the system.
+chapter. Unplugging headphones pauses reading instead of switching to the
+speakers. Light and dark mode follow the system.
 
 ### Skipping lines and fixing pronunciation
 
