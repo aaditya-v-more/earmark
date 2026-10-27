@@ -2,7 +2,6 @@
 (() => {
   const BLOCK = /^(P|DIV|H[1-6]|LI|BLOCKQUOTE|PRE|TD|TH|DT|DD|SECTION|ARTICLE|ASIDE|HEADER|FOOTER|FIGCAPTION|TR|TABLE|UL|OL|DL|BODY)$/i;
   const SKIP = 'script,style,head,rt,rp,noscript,nav';
-  const MAX = 350;
 
   function blockOf(node) {
     let el = node.parentElement;
@@ -11,7 +10,7 @@
   }
 
   // Flatten the text: one entry per text node, with "\n\n" between blocks so paragraphs never
-  // merge. Then split it into sentences, cutting very long ones at a comma or similar.
+  // merge. Then split it into sentences.
   function segment(doc) {
     const nodes = [];
     let flat = '';
@@ -37,18 +36,6 @@
       let a = s.index, b = a + s.segment.length;
       while (a < b && /\s/.test(flat[a])) a++;
       while (b > a && /\s/.test(flat[b - 1])) b--;
-      while (b - a > MAX) {
-        const piece = flat.slice(a, a + MAX);
-        let cut = -1;
-        for (const mark of [',', ';', ':', '—', ' ']) {
-          const i = piece.lastIndexOf(mark);
-          if (i > MAX / 3) { cut = i + 1; break; }
-        }
-        if (cut < 0) cut = MAX;
-        sentences.push([a, a + cut]);
-        a += cut;
-        while (a < b && /\s/.test(flat[a])) a++;
-      }
       if (b > a && /[\p{L}\p{N}]/u.test(flat.slice(a, b))) sentences.push([a, b]);
     }
     return { nodes, flat, sentences };

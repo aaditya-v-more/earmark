@@ -113,9 +113,7 @@ struct TextRules {
 }
 
 enum Sentences {
-    static let maxLength = 350
-
-    /// Sentence ranges in `text` (UTF-16), trimmed, with overly long ones split at a comma or similar.
+    /// Sentence ranges in `text` (UTF-16), trimmed.
     static func split(_ text: String) -> [NSRange] {
         let ns = text as NSString
         let tokenizer = NLTokenizer(unit: .sentence)
@@ -132,30 +130,10 @@ enum Sentences {
                 r.length -= 1
             }
             if r.length > 0, ns.substring(with: r).rangeOfCharacter(from: .alphanumerics) != nil {
-                result += cap(r, in: ns)
+                result.append(r)
             }
             return true
         }
         return result
-    }
-
-    private static func cap(_ r: NSRange, in ns: NSString) -> [NSRange] {
-        var pieces: [NSRange] = []
-        var rest = r
-        while rest.length > maxLength {
-            let window = NSRange(location: rest.location, length: maxLength)
-            let sub = ns.substring(with: window) as NSString
-            var cut = -1
-            for mark in [",", ";", ":", "—", " "] {
-                let found = sub.range(of: mark, options: .backwards)
-                if found.location != NSNotFound, found.location > maxLength / 3 { cut = found.upperBound; break }
-            }
-            if cut < 0 { cut = maxLength }
-            pieces.append(NSRange(location: rest.location, length: cut))
-            rest = NSRange(location: rest.location + cut, length: rest.length - cut)
-            while rest.length > 0, ns.character(at: rest.location) == 32 { rest = NSRange(location: rest.location + 1, length: rest.length - 1) }
-        }
-        if rest.length > 0 { pieces.append(rest) }
-        return pieces
     }
 }
