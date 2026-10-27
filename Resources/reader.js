@@ -38,10 +38,15 @@
       while (b > a && /\s/.test(flat[b - 1])) b--;
       if (b > a && /[\p{L}\p{N}]/u.test(flat.slice(a, b))) sentences.push([a, b]);
     }
-    return { nodes, flat, sentences };
+    // Whether each sentence is the last of its paragraph (a block break follows it).
+    const paraEnds = sentences.map(([, b], i) => {
+      const next = sentences[i + 1];
+      return !next || flat.slice(b, next[0]).includes('\n\n');
+    });
+    return { nodes, flat, sentences, paraEnds };
   }
 
-  const { nodes, flat, sentences } = segment(document);
+  const { nodes, flat, sentences, paraEnds } = segment(document);
 
   function locate(offset, isEnd) {
     const key = isEnd ? offset - 1 : offset;
@@ -162,6 +167,29 @@
     },
     // Redraws the highlight boxes after the text reflows (new size or width).
     repaint() { repaint(); },
+    // Index of the first sentence on screen (below the title band).
+    firstVisible() {
+      const top = 30;
+      for (let i = 0; i < sentences.length; i++) {
+        const r = rangeOf(sentences[i][0], sentences[i][1]).getBoundingClientRect();
+        if (r.bottom > top && r.top < innerHeight) return i;
+      }
+      return -1;
+    },
+    // Whether a sentence is at least partly on screen.
+    isVisible(index) {
+      const s = sentences[index];
+      if (!s) return false;
+      const r = rangeOf(s[0], s[1]).getBoundingClientRect();
+      return r.bottom > 30 && r.top < innerHeight;
+    },
+    // Every sentence of another chapter's markup, for exporting audio.
+    allSentences(markup) {
+      let doc = new DOMParser().parseFromString(markup, 'application/xhtml+xml');
+      if (doc.getElementsByTagName('parsererror').length) doc = new DOMParser().parseFromString(markup, 'text/html');
+      const seg = segment(doc);
+      return seg.sentences.map(([a, b], i) => [seg.flat.slice(a, b), seg.paraEnds[i]]);
+    },
     // What is highlighted now, as text (used by the debug log).
     state() {
       const s = sentences[current];
@@ -195,5 +223,6 @@
   window.webkit.messageHandlers.earmark.postMessage({
     type: 'ready',
     sentences: sentences.map(([a, b]) => flat.slice(a, b)),
+    paraEnds: paraEnds.flatMap((end, i) => end ? [i] : []),
   });
 })();

@@ -13,6 +13,12 @@ protocol Surface: AnyObject {
     func highlight(sentence: Int, word: NSRange?, follow: Bool)
     /// The first sentences of another chapter, to prepare its audio ahead of time.
     func upcoming(_ book: Book, chapter: Int, count: Int, done: @escaping ([String]) -> Void)
+    /// Sentences that end a paragraph in the chapter on screen.
+    var paragraphEnds: Set<Int> { get }
+    /// Where reading would start from what is on screen, and whether `sentence` is on screen now.
+    func visibleStart(current sentence: Int, done: @escaping (_ start: (chapter: Int, sentence: Int)?, _ currentShown: Bool) -> Void)
+    /// Every sentence of a chapter and whether it ends a paragraph, without showing it.
+    func allSentences(_ book: Book, chapter: Int, done: @escaping ([(String, Bool)]) -> Void)
 }
 
 // MARK: - EPUB, HTML and text, in a web view
@@ -24,6 +30,7 @@ final class WebSurface: NSObject, Surface, WKScriptMessageHandler, WKNavigationD
     var onSeek: ((Int, Int) -> Void)?
     /// A link to another chapter of the book was clicked.
     var onLink: ((URL) -> Void)?
+    private(set) var paragraphEnds: Set<Int> = []
     private var chapter = 0
 
     private let styleScript: String
@@ -56,21 +63,28 @@ final class WebSurface: NSObject, Surface, WKScriptMessageHandler, WKNavigationD
         }
     }
 
-    /// Text size in points and column width in ems: for this page now, and every page after.
+    /// Text size, column width, font, line spacing and theme: for this page now, and every page after.
     func setLayout(size: Int, width: Int) {
+        let font = String(data: try! JSONSerialization.data(withJSONObject: [Prefs.fontStack]), encoding: .utf8)!
+        let theme = Prefs.theme == "system" ? "" : Prefs.theme
         layoutScript = """
-        document.documentElement.style.setProperty('--em-size', '\(size)px');
-        document.documentElement.style.setProperty('--em-width', '\(width)em');
+        (() => { const r = document.documentElement.style;
+          r.setProperty('--em-size', '\(size)px');
+          r.setProperty('--em-width', '\(width)em');
+          r.setProperty('--em-line', '\(Prefs.lineSpacing)');
+          r.setProperty('--em-font', \(font)[0]);
+          if ('\(theme)') document.documentElement.setAttribute('data-em-theme', '\(theme)');
+          else document.documentElement.removeAttribute('data-em-theme'); })();
         """
         installScripts()
         web.evaluateJavaScript(layoutScript + "window.earmark && earmark.repaint();")
     }
 
     /// Finds text in this chapter, wrapping around; false if it isn't there.
-    func find(_ text: String, backwards: Bool, done: @escaping (Bool) -> Void) {
+    func find(_ text: String, backwards: Bool, wraps: Bool = true, done: @escaping (Bool) -> Void) {
         let config = WKFindConfiguration()
         config.backwards = backwards
-        config.wraps = true
+        config.wraps = wraps
         web.find(text, configuration: config) { result in done(result.matchFound) }
     }
 
@@ -95,6 +109,28 @@ final class WebSurface: NSObject, Surface, WKScriptMessageHandler, WKNavigationD
         }
     }
 
+    func visibleStart(current sentence: Int, done: @escaping ((chapter: Int, sentence: Int)?, Bool) -> Void) {
+        let chapter = chapter
+        web.evaluateJavaScript("[earmark.firstVisible(), earmark.isVisible(\(sentence))]") { result, _ in
+            let pair = result as? [Any]
+            let first = pair?.first as? Int ?? -1
+            let shown = pair?.last as? Bool ?? true
+            done(first >= 0 ? (chapter, first) : nil, shown)
+        }
+    }
+
+    func allSentences(_ book: Book, chapter: Int, done: @escaping ([(String, Bool)]) -> Void) {
+        guard book.spine.indices.contains(chapter),
+              let markup = try? String(contentsOf: book.spine[chapter], encoding: .utf8) else { return done([]) }
+        let literal = String(data: try! JSONSerialization.data(withJSONObject: [markup]), encoding: .utf8)!
+        web.evaluateJavaScript("earmark.allSentences(\(literal)[0])") { result, _ in
+            done((result as? [[Any]] ?? []).compactMap { pair in
+                guard let text = pair.first as? String else { return nil }
+                return (text, pair.last as? Bool ?? false)
+            })
+        }
+    }
+
     /// Index of the last of these anchors that comes before the current sentence.
     func section(_ ids: [String], done: @escaping (Int?) -> Void) {
         let json = String(data: try! JSONSerialization.data(withJSONObject: ids), encoding: .utf8)!
@@ -113,7 +149,9 @@ final class WebSurface: NSObject, Surface, WKScriptMessageHandler, WKNavigationD
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
         switch type {
-        case "ready": onReady?(body["sentences"] as? [String] ?? [])
+        case "ready":
+            paragraphEnds = Set(body["paraEnds"] as? [Int] ?? [])
+            onReady?(body["sentences"] as? [String] ?? [])
         case "seek": if let index = body["index"] as? Int { onSeek?(chapter, index) }
         default: break
         }
@@ -141,6 +179,8 @@ final class PDFSurface: Surface {
     var onSeek: ((Int, Int) -> Void)?
     private var page: PDFPage?
     private var ranges: [NSRange] = []
+    // PDF text has no reliable paragraph marks.
+    let paragraphEnds: Set<Int> = []
 
     init() {
         pdfView.autoScales = true
@@ -215,6 +255,29 @@ final class PDFSurface: Surface {
     func upcoming(_ book: Book, chapter: Int, count: Int, done: @escaping ([String]) -> Void) {
         guard let page = book.pdf?.page(at: chapter) else { return done([]) }
         done(Array(Self.sentences(on: page).1.prefix(count)))
+    }
+
+    func visibleStart(current sentence: Int, done: @escaping ((chapter: Int, sentence: Int)?, Bool) -> Void) {
+        guard let doc = pdfView.document else { return done(nil, true) }
+        let top = NSPoint(x: pdfView.bounds.midX, y: pdfView.isFlipped ? 40 : pdfView.bounds.height - 40)
+        guard let shownPage = pdfView.page(for: top, nearest: true) else { return done(nil, true) }
+        let (shownRanges, _) = Self.sentences(on: shownPage)
+        // First sentence whose top is below the top edge of the view.
+        let first = shownRanges.firstIndex { r in
+            guard let sel = shownPage.selection(for: r) else { return false }
+            let rect = pdfView.convert(sel.bounds(for: shownPage), from: shownPage)
+            return pdfView.isFlipped ? rect.minY >= 30 : rect.maxY <= pdfView.bounds.height - 30
+        } ?? 0
+        var currentShown = false
+        if let page, ranges.indices.contains(sentence), let sel = page.selection(for: ranges[sentence]) {
+            currentShown = pdfView.bounds.intersects(pdfView.convert(sel.bounds(for: page), from: page))
+        }
+        done((doc.index(for: shownPage), first), currentShown)
+    }
+
+    func allSentences(_ book: Book, chapter: Int, done: @escaping ([(String, Bool)]) -> Void) {
+        guard let page = book.pdf?.page(at: chapter) else { return done([]) }
+        done(Self.sentences(on: page).1.map { ($0, false) })
     }
 
     private func clicked(_ clickedPage: PDFPage, _ index: Int) {

@@ -1,10 +1,14 @@
-:root { color-scheme: light dark; --em-size: 19px; --em-width: 36em; }
+:root {
+  color-scheme: light dark;
+  --em-size: 19px; --em-width: 36em; --em-line: 1.65;
+  --em-font: "Iowan Old Style", "Palatino", Georgia, serif;
+}
 html, body { background: #FAF8F3 !important; color: #222 !important; }
 body {
   max-width: var(--em-width) !important;
   margin: 0 auto !important;
   padding: 2.5em 1.75em 45vh !important;
-  font: var(--em-size)/1.65 "Iowan Old Style", "Palatino", Georgia, serif !important;
+  font: var(--em-size)/var(--em-line) var(--em-font) !important;
   -webkit-font-smoothing: antialiased;
 }
 p, li, div, span, blockquote { font-family: inherit !important; }
@@ -21,3 +25,12 @@ body { position: relative !important; z-index: 0; }
   .em-sentence { background: rgba(250, 204, 21, 0.15); }
   .em-word { background: rgba(234, 120, 20, 0.45); }
 }
+
+/* Themes chosen in Settings, regardless of the system appearance. */
+html[data-em-theme=light], html[data-em-theme=light] body { background: #FFFFFF !important; color: #1D1D1F !important; color-scheme: light; }
+html[data-em-theme=sepia], html[data-em-theme=sepia] body { background: #F4ECD8 !important; color: #5B4636 !important; color-scheme: light; }
+html[data-em-theme=dark], html[data-em-theme=dark] body { background: #1B1B1D !important; color: #E4E2DD !important; color-scheme: dark; }
+html[data-em-theme=light] .em-sentence, html[data-em-theme=sepia] .em-sentence { background: rgba(250, 204, 21, 0.24); }
+html[data-em-theme=light] .em-word, html[data-em-theme=sepia] .em-word { background: rgba(234, 120, 20, 0.5); }
+html[data-em-theme=dark] .em-sentence { background: rgba(250, 204, 21, 0.15); }
+html[data-em-theme=dark] .em-word { background: rgba(234, 120, 20, 0.45); }

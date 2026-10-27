@@ -89,7 +89,12 @@ is tied to the book itself, so moving or re-downloading the file keeps it.
 | ⌘= / ⌘- | Faster / slower |
 | ⌥⌘= / ⌥⌘- | Bigger / smaller text (zoom, in a PDF) |
 | ⌥⌘] / ⌥⌘[ | Wider / narrower column |
-| ⌘F | Find in the chapter (the whole PDF); Return for the next match, Shift-Return for the previous |
+| ⌘F | Find in the book; Return for the next match (moving on to later chapters), Shift-Return for the previous |
+| ⌥⌘C | Copy the sentence being read |
+| ⌘⇧V | Read the clipboard: text opens as a book, a link opens its page |
+| ⌘L | Open a web page, optionally following its "Next" links |
+| ⌘⇧E | Export chapters as audio |
+| ⌘, | Settings |
 | ⌘D | Bookmark the current sentence; the Bookmarks menu lists them |
 | Media keys | Play / pause, next / previous sentence, from the keyboard, AirPods or Control Center |
 
@@ -100,6 +105,38 @@ are prepared while the current one finishes. Scroll back to re-read and the
 page stays put for a few seconds before following the voice again. After a
 pause of more than 30 seconds, the sentence starts over. Drag the window by
 its top edge or the empty parts of the control bar.
+
+### Web serials and pasted text
+
+**File → Open Web Page** (⌘L) takes a chapter's address, pulls out the
+chapter text, and can follow the page's "Next" links up to a limit you set in
+Settings. The result is saved as an EPUB in `Documents/Earmark` and opens
+right away. Stop it with ⌘. and the chapters so far are kept. Sites that show
+a browser check instead of the page can't be downloaded this way; save the
+page from your browser and open the file instead.
+
+**File → Read Clipboard** (⌘⇧V) opens copied text as a book, or a copied link
+as its page. Pasted text is kept so it shows up in Open Recent, and is deleted
+after the number of days set in Settings (30 to start with).
+
+### Saving as audio
+
+**File → Export Audio** (⌘⇧E) saves a range of chapters as M4A files, one per
+chapter, using the current voice, speed, pronunciations, skipped lines and
+pauses. It works with system voices and plugin voices, and ⌘. stops it.
+
+### Settings
+
+**Earmark → Settings** (⌘,) holds the optional extras. All of them start off,
+so Earmark behaves as described above until you change them:
+
+- **Theme**: match the system, or always light, sepia or dark
+- **Font** and **line spacing**
+- **Start from the first sentence on screen** when pressing Play after scrolling away
+- **Jump by**: how many sentences the previous and next keys move
+- **Pauses** after each sentence, paragraph and chapter, in milliseconds
+- **Keep pasted text for** a number of days
+- **Web serials**: the most chapters to follow
 
 **Playback → Sleep Timer** stops after 15 to 60 minutes, or at the end of the
 chapter. Unplugging headphones pauses reading instead of switching to the

@@ -42,6 +42,15 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
     private var sleepTimer: DispatchWorkItem?
     private var sleepDeadline: Date?
     private var stopAtChapterEnd = false
+    /// The gap before the next sentence (pause settings); paused mid-gap means "advance on resume".
+    private var gap: DispatchWorkItem?
+    private var advanceOnResume = false
+    /// A web import or audio export running in the background, and its progress line.
+    private var importer: WebImporter?
+    private var exporter: AudioExporter?
+    private var taskNote: String?
+    /// A search to run once another chapter has loaded: (text, backwards).
+    private var pendingFind: (String, Bool)?
 
     private let defaults = UserDefaults.standard
     private static let speeds: [Double] = [0.75, 1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75, 3, 3.5, 4]
@@ -92,7 +101,10 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
         rebuildSpeedMenu()
         setUpMediaKeys()
         watchOutputDevice()
-        webSurface.setLayout(size: textSize, width: columnWidth)
+        applyPrefs()
+        NotificationCenter.default.addObserver(forName: Prefs.changed, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applyPrefs() }
+        }
         NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
             // Reading back up: let the page stay where the reader put it for a few seconds.
             self?.lastManualScroll = Date()
@@ -145,7 +157,7 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
             icon("forward.fill", "Next sentence", #selector(nextSentence)),
         ])
         controls.spacing = 14
-        findField.placeholderString = "Find in chapter"
+        findField.placeholderString = "Find in book"
         findField.controlSize = .small
         findField.font = .systemFont(ofSize: 12)
         findField.delegate = self
@@ -220,9 +232,15 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
         button.symbolConfiguration = .init(pointSize: 10, weight: .semibold)
         button.toolTip = "Support Earmark on Ko-fi"
         button.sizeToFit()
-        let holder = NSView(frame: NSRect(x: 0, y: 0, width: button.frame.width + 16, height: 28))
-        button.frame.origin = NSPoint(x: 4, y: (28 - button.frame.height) / 2)
+        // Centred on the title bar's height, with the same right margin as the bar below.
+        let barHeight = max(28, (window?.frame.height ?? 0) - (window?.contentLayoutRect.height ?? 0))
+        let holder = NSView(frame: NSRect(x: 0, y: 0, width: button.frame.width + 14, height: barHeight))
+        button.translatesAutoresizingMaskIntoConstraints = false
         holder.addSubview(button)
+        NSLayoutConstraint.activate([
+            button.centerYAnchor.constraint(equalTo: holder.centerYAnchor),
+            button.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -14),
+        ])
         let accessory = NSTitlebarAccessoryViewController()
         accessory.view = holder
         accessory.layoutAttribute = .trailing
@@ -261,6 +279,7 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
         let within = sentences.isEmpty ? 0 : Double(sentence) / Double(sentences.count)
         parts.append("\(Int(((Double(chapter) + within) / Double(max(total, 1)) * 100).rounded()))%")
         if let fallbackNote { parts.append(fallbackNote) }
+        if let taskNote { parts.append(taskNote) }
         if stopAtChapterEnd { parts.append("stops at chapter end") }
         if let sleepDeadline { parts.append("sleep in \(max(1, Int(sleepDeadline.timeIntervalSinceNow / 60)))m") }
         status.stringValue = parts.joined(separator: " · ")
@@ -446,6 +465,7 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
 
     private func load(chapter index: Int, at start: Int?, autoplay: Bool) {
         guard let book, (0..<book.chapterCount).contains(index) else { return }
+        cancelGap()
         engine?.stop()
         chapter = index
         sentences = []
@@ -492,9 +512,14 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
         highlight(word: nil)
         syncChapterMenu()
         if playing { speakCurrent() }
+        if let (text, backwards) = pendingFind {
+            pendingFind = nil
+            webSurface.find(text, backwards: backwards, wraps: false) { _ in }
+        }
     }
 
     private func seek(chapter target: Int, sentence index: Int) {
+        cancelGap()
         if target != chapter {
             load(chapter: target, at: index, autoplay: playing && !paused)
             return
@@ -600,6 +625,28 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
         guard playing, !paused else { return }
         var next = sentence + 1
         while next < sentences.count && skipped.contains(next) { next += 1 }
+        let ms = next < sentences.count
+            ? (surface.paragraphEnds.contains(sentence) ? Prefs.pauseParagraph : Prefs.pauseSentence)
+            : Prefs.pauseChapter
+        guard ms > 0 else { return advanceNow() }
+        let work = DispatchWorkItem { [weak self] in
+            self?.gap = nil
+            self?.advanceNow()
+        }
+        gap = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(ms), execute: work)
+    }
+
+    private func cancelGap() {
+        gap?.cancel()
+        gap = nil
+        advanceOnResume = false
+    }
+
+    private func advanceNow() {
+        guard playing, !paused else { return }
+        var next = sentence + 1
+        while next < sentences.count && skipped.contains(next) { next += 1 }
         if next < sentences.count {
             sentence = next
             speakCurrent()
@@ -621,6 +668,7 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
     }
 
     private func stopSpeaking() {
+        cancelGap()
         engine?.stop()
         playing = false
         paused = false
@@ -644,15 +692,37 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
         if playing && !paused {
             paused = true
             pausedAt = Date()
+            if gap != nil {
+                // Paused between sentences: pick up with the next one on resume.
+                gap?.cancel()
+                gap = nil
+                advanceOnResume = true
+            }
             engine?.pause()
         } else if playing && paused {
             paused = false
-            // After a long break, start the sentence again rather than mid-word.
-            if let pausedAt, Date().timeIntervalSince(pausedAt) > 30 { speakCurrent() } else { engine?.resume() }
+            if advanceOnResume {
+                advanceOnResume = false
+                advanceNow()
+            } else if let pausedAt, Date().timeIntervalSince(pausedAt) > 30 {
+                // After a long break, start the sentence again rather than mid-word.
+                speakCurrent()
+            } else {
+                engine?.resume()
+            }
         } else {
             playing = true
             paused = false
-            speakCurrent()
+            guard Prefs.startFromVisible else { speakCurrent(); return updatePlayButton() }
+            // Start where the reader is looking if the last sentence has scrolled out of view.
+            surface.visibleStart(current: sentence) { [weak self] start, shown in
+                guard let self, self.playing else { return }
+                if !shown, let start {
+                    if start.chapter != self.chapter { return self.load(chapter: start.chapter, at: start.sentence, autoplay: true) }
+                    self.sentence = self.firstReadable(from: start.sentence)
+                }
+                self.speakCurrent()
+            }
         }
         updatePlayButton()
     }
@@ -661,9 +731,16 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
     @objc func previousSentence() { step(-1) }
 
     private func step(_ delta: Int) {
-        var target = sentence + delta
-        while sentences.indices.contains(target) && skipped.contains(target) { target += delta }
-        if sentences.indices.contains(target) {
+        cancelGap()
+        // Settings → Jump by: how many sentences one step moves.
+        var target = sentence
+        for _ in 0..<Prefs.jump {
+            var t = target + delta
+            while sentences.indices.contains(t) && skipped.contains(t) { t += delta }
+            guard sentences.indices.contains(t) else { break }
+            target = t
+        }
+        if target != sentence {
             engine?.stop()
             sentence = target
             highlight(word: nil)
@@ -765,6 +842,21 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
         sleepDeadline = nil
     }
 
+    // MARK: - Settings
+
+    private func applyPrefs() {
+        webSurface.setLayout(size: textSize, width: columnWidth)
+        let appearance: NSAppearance.Name? = ["light": .aqua, "sepia": .aqua, "dark": .darkAqua][Prefs.theme]
+        window?.appearance = appearance.flatMap(NSAppearance.init(named:))
+    }
+
+    @objc func copySentence() {
+        guard sentences.indices.contains(sentence) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(sentences[sentence], forType: .string)
+        say("Sentence copied")
+    }
+
     // MARK: - Text size and column width
 
     @objc func biggerText() { setText(size: textSize + 2) }
@@ -829,9 +921,164 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
         guard !text.isEmpty else { return }
         if surface === pdfSurface {
             if !pdfSurface.find(text, backwards: backwards) { NSSound.beep() }
-        } else {
-            webSurface.find(text, backwards: backwards) { found in if !found { NSSound.beep() } }
+            return
         }
+        // This chapter first; past its last match, go on to the next chapter that has one.
+        webSurface.find(text, backwards: backwards, wraps: false) { [weak self] found in
+            guard let self, !found, let book = self.book else { return }
+            let n = book.chapterCount
+            let order = (1..<max(n, 1)).map { backwards ? (self.chapter - $0 + n) % n : (self.chapter + $0) % n }
+            guard let target = order.first(where: { Self.chapter(book, $0, contains: text) }) else {
+                // Only this chapter has it (or nothing does): wrap around within it.
+                return self.webSurface.find(text, backwards: backwards) { found in if !found { NSSound.beep() } }
+            }
+            if self.playing && !self.paused { self.togglePlay() }
+            self.pendingFind = (text, backwards)
+            self.load(chapter: target, at: 0, autoplay: false)
+        }
+    }
+
+    private static func chapter(_ book: Book, _ index: Int, contains text: String) -> Bool {
+        guard book.spine.indices.contains(index),
+              let markup = try? String(contentsOf: book.spine[index], encoding: .utf8) else { return false }
+        let plain = markup.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+        return plain.range(of: text, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+    }
+
+    // MARK: - Clipboard, web pages and audio export
+
+    /// Opens what's on the clipboard: a link as a web page, text as a saved, temporary book.
+    @objc func readClipboard() {
+        let board = NSPasteboard.general
+        let string = board.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if let url = URL(string: string), url.scheme?.hasPrefix("http") == true, !string.contains(" ") {
+            return importWeb(url, follow: false, limit: 1, folder: Pasted.folder)
+        }
+        if let file = board.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])?.first as? URL {
+            return open(file)
+        }
+        guard !string.isEmpty else { return say("The clipboard has no text") }
+        Pasted.prune()
+        do { open(try Pasted.save(string)) } catch { say(error.localizedDescription) }
+    }
+
+    @objc func openWebPage() {
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Open Web Page"
+        alert.informativeText = "Paste a chapter's address. Earmark saves the text as a book in Documents/Earmark."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        field.placeholderString = "https://"
+        if let s = NSPasteboard.general.string(forType: .string), s.hasPrefix("http") { field.stringValue = s }
+        let follow = NSButton(checkboxWithTitle: "Follow “Next” links, up to \(Prefs.webChapterLimit) chapters", target: nil, action: nil)
+        follow.state = .on
+        let stack = NSStackView(views: [field, follow])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.frame = NSRect(x: 0, y: 0, width: 320, height: 54)
+        alert.accessoryView = stack
+        alert.addButton(withTitle: "Open")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            guard let url = URL(string: field.stringValue.trimmingCharacters(in: .whitespaces)), url.scheme?.hasPrefix("http") == true else {
+                return self.say("That isn’t a web address")
+            }
+            let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent(appName)
+            self.importWeb(url, follow: follow.state == .on, limit: follow.state == .on ? Prefs.webChapterLimit : 1, folder: folder)
+        }
+    }
+
+    private func importWeb(_ url: URL, follow: Bool, limit: Int, folder: URL) {
+        guard importer == nil else { return say("Already downloading; Stop (⌘.) first") }
+        let job = WebImporter()
+        importer = job
+        job.onProgress = { [weak self] note in
+            DispatchQueue.main.async { self?.taskNote = note + " · ⌘. stops"; self?.showProgress() }
+        }
+        Task { @MainActor in
+            defer { self.importer = nil; self.taskNote = nil; self.showProgress() }
+            do {
+                let file = try await job.run(from: url, follow: follow, limit: limit, into: folder)
+                self.open(file)
+            } catch {
+                self.say(error.localizedDescription)
+            }
+        }
+    }
+
+    @objc func exportAudio() {
+        guard let book, let window, exporter == nil else { return }
+        let titles = (0..<book.chapterCount).map { i in book.toc.last { $0.spineIndex <= i }?.title ?? "Chapter \(i + 1)" }
+        let from = NSPopUpButton(), to = NSPopUpButton()
+        for p in [from, to] {
+            for (i, t) in titles.enumerated() { p.addItem(withTitle: "\(i + 1). \(t)"); p.lastItem?.tag = i }
+            p.widthAnchor.constraint(equalToConstant: 300).isActive = true
+        }
+        from.selectItem(withTag: chapter)
+        to.selectItem(withTag: chapter)
+        let grid = NSGridView(views: [[NSTextField(labelWithString: "From:"), from], [NSTextField(labelWithString: "To:"), to]])
+        grid.frame = NSRect(x: 0, y: 0, width: 360, height: 60)
+        let alert = NSAlert()
+        alert.messageText = "Export Audio"
+        alert.informativeText = "Saves each chapter as an M4A file, with the current voice, speed, pronunciations and pauses."
+        alert.accessoryView = grid
+        alert.addButton(withTitle: "Choose Folder…")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            let first = min(from.selectedTag(), to.selectedTag()), last = max(from.selectedTag(), to.selectedTag())
+            let panel = NSOpenPanel()
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.canCreateDirectories = true
+            panel.prompt = "Export Here"
+            panel.directoryURL = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first
+            panel.beginSheetModal(for: window) { result in
+                guard result == .OK, let folder = panel.url else { return }
+                self.runExport(book: book, titles: titles, chapters: Array(first...last), folder: folder)
+            }
+        }
+    }
+
+    private func runExport(book: Book, titles: [String], chapters: [Int], folder: URL) {
+        let key = currentVoiceKey ?? ""
+        let voice: AudioExporter.Voice
+        if key.hasPrefix("plugin:") {
+            let parts = key.dropFirst("plugin:".count).split(separator: "|", maxSplits: 1).map(String.init)
+            guard let config = plugins.first(where: { $0.name == parts[0] }) else { return say("Choose a voice first") }
+            voice = .plugin(config, parts.count > 1 ? parts[1] : nil)
+        } else {
+            voice = .system(String(key.dropFirst("system:".count)))
+        }
+        let job = AudioExporter()
+        exporter = job
+        job.onProgress = { [weak self] note in
+            DispatchQueue.main.async { self?.taskNote = note + " · ⌘. stops"; self?.showProgress() }
+        }
+        let surface = surface
+        Task { @MainActor in
+            defer { self.exporter = nil; self.taskNote = nil; self.showProgress() }
+            do {
+                let count = try await job.run(.init(titles: titles, speed: self.speed, voice: voice, rules: self.rules),
+                                              chapters: chapters, folder: folder) { i in
+                    await withCheckedContinuation { done in
+                        DispatchQueue.main.async { surface.allSentences(book, chapter: i) { done.resume(returning: $0) } }
+                    }
+                }
+                self.say(job.cancelled ? "Export stopped after \(count) file\(count == 1 ? "" : "s")" : "Exported \(count) file\(count == 1 ? "" : "s")")
+                if count > 0 { NSWorkspace.shared.activateFileViewerSelecting([folder]) }
+            } catch {
+                self.say("Export failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Stops a running download or export; what's done so far is kept.
+    @objc func stopTask() {
+        importer?.cancel()
+        exporter?.cancel()
     }
 
     // MARK: - Bookmarks

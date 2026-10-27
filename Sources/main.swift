@@ -6,10 +6,17 @@ let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? Strin
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var reader = ReaderController()
+    private lazy var settings = SettingsController()
+
+    @objc func showSettings(_ sender: Any?) {
+        settings.showWindow(nil)
+        settings.window?.makeKeyAndOrderFront(nil)
+    }
     private var openedAtLaunch = false
 
     func applicationDidFinishLaunching(_ note: Notification) {
         buildMenu()
+        Pasted.prune()
         reader.showWindow(nil)
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             // Space plays and pauses, unless a menu or text field wants it.
@@ -169,6 +176,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item("About \(appName)", #selector(showAbout(_:)), "", target: self),
             item("Support Earmark on Ko-fi…", #selector(openKofi(_:)), "", target: self),
             .separator(),
+            item("Settings…", #selector(showSettings(_:)), ",", target: self),
+            .separator(),
             item("Hide \(appName)", #selector(NSApplication.hide(_:)), "h"),
             item("Quit \(appName)", #selector(NSApplication.terminate(_:)), "q"),
         ])
@@ -178,6 +187,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         submenu("File", [
             item("Open…", #selector(openDocument(_:)), "o", target: self),
             recent,
+            item("Open Web Page…", #selector(ReaderController.openWebPage), "l", target: reader),
+            item("Read Clipboard", #selector(ReaderController.readClipboard), "v", [.command, .shift], target: reader),
+            .separator(),
+            item("Export Audio…", #selector(ReaderController.exportAudio), "e", [.command, .shift], target: reader),
+            item("Stop Download or Export", #selector(ReaderController.stopTask), ".", target: reader),
             .separator(),
             item("Reload Settings", #selector(reloadPlugins(_:)), "r", target: self),
             item("Close", #selector(NSWindow.performClose(_:)), "w"),
@@ -187,8 +201,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item("Copy", #selector(NSText.copy(_:)), "c"),
             item("Paste", #selector(NSText.paste(_:)), "v"),
             item("Select All", #selector(NSText.selectAll(_:)), "a"),
+            item("Copy Sentence", #selector(ReaderController.copySentence), "c", [.command, .option], target: r),
             .separator(),
-            item("Find in Chapter…", #selector(ReaderController.showFind), "f", target: r),
+            item("Find…", #selector(ReaderController.showFind), "f", target: r),
         ])
         submenu("View", [
             item("Bigger Text", #selector(ReaderController.biggerText), "=", [.command, .option], target: r),

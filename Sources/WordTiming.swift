@@ -132,7 +132,7 @@ enum WordTiming {
 
     /// RMS loudness in 10 ms steps, and the step length in seconds.
     private static func envelope(_ data: Data) -> ([Float], Double)? {
-        guard let (samples, rate) = pcm(data) ?? decodeWithAVFoundation(data), !samples.isEmpty else { return nil }
+        guard let (samples, rate) = decode(data), !samples.isEmpty else { return nil }
         let hop = max(1, Int(rate / 100))
         var env: [Float] = []
         env.reserveCapacity(samples.count / hop + 1)
@@ -146,6 +146,9 @@ enum WordTiming {
         }
         return (env, Double(hop) / rate)
     }
+
+    /// Audio file bytes to mono float samples and their sample rate.
+    static func decode(_ data: Data) -> ([Float], Double)? { pcm(data) ?? decodeWithAVFoundation(data) }
 
     /// Reads a plain WAV file in memory: 8/16/24/32-bit integer or 32-bit float PCM, first channel.
     private static func pcm(_ data: Data) -> ([Float], Double)? {
