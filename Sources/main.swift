@@ -7,6 +7,16 @@ let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? Strin
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var reader = ReaderController()
     private lazy var settings = SettingsController()
+    private lazy var tour = Tour { [weak self] in self?.reader.tourAnchors ?? [:] }
+
+    @objc func showTutorial(_ sender: Any?) {
+        reader.showWindow(nil)
+        tour.start()
+    }
+
+    @objc func openHelp(_ sender: Any?) {
+        NSWorkspace.shared.open(URL(string: "https://github.com/aaditya-v-more/earmark#reading")!)
+    }
 
     @objc func showSettings(_ sender: Any?) {
         settings.showWindow(nil)
@@ -33,6 +43,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let text = ProcessInfo.processInfo.environment["EARMARK_DEBUG_FIND"] {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.reader.debugFind(text) }
             }
+        }
+        // The tour runs once, the first time Earmark opens; Help → Show Tutorial replays it.
+        tour.onEnd = { UserDefaults.standard.set(true, forKey: "tourShown") }
+        if let mode = ProcessInfo.processInfo.environment["EARMARK_DEBUG_TOUR"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                self?.tour.debugWalk(skip: mode == "skip") { FileHandle.standardError.write(Data(("tour " + $0 + "\n").utf8)) }
+            }
+        } else if !UserDefaults.standard.bool(forKey: "tourShown") && Debug.dir == nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.tour.start() }
         }
         if !openedAtLaunch, let last = UserDefaults.standard.string(forKey: "lastBook"),
            FileManager.default.fileExists(atPath: last) {
@@ -234,6 +253,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         submenu("Window", [
             item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"),
             item("Zoom", #selector(NSWindow.performZoom(_:)), ""),
+        ])
+        submenu("Help", [
+            item("Show Tutorial", #selector(showTutorial(_:)), "", target: self),
+            item("\(appName) Help", #selector(openHelp(_:)), "?", target: self),
         ])
         NSApp.mainMenu = main
     }

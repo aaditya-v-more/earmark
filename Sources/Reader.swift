@@ -16,6 +16,8 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
     private let status = NSTextField(labelWithString: "")
     private let findField = NSSearchField()
     private weak var titleLabel: NSTextField?
+    private weak var stepControls: NSView?
+    private weak var titleStrip: NSView?
 
     private var book: Book?
     private var chapter = 0
@@ -157,6 +159,7 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
             icon("forward.fill", "Next sentence", #selector(nextSentence)),
         ])
         controls.spacing = 14
+        stepControls = controls
         findField.placeholderString = "Find in book"
         findField.controlSize = .small
         findField.font = .systemFont(ofSize: 12)
@@ -182,6 +185,7 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
         let grip = DragStrip()
         grip.title.stringValue = appName
         titleLabel = grip.title
+        titleStrip = grip
         // A blurred band behind the title, like the control bar, so text scrolls under it cleanly.
         let topBand = NSVisualEffectView()
         topBand.material = .titlebar
@@ -840,6 +844,17 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
         sleepTimer?.cancel()
         sleepTimer = nil
         sleepDeadline = nil
+    }
+
+    // MARK: - Tour
+
+    /// The views the tour points at.
+    var tourAnchors: [String: NSView] {
+        var views: [String: NSView] = ["page": page, "play": playButton, "chapter": chapterMenu,
+                                       "voice": voiceMenu, "speed": speedMenu]
+        if let stepControls { views["steps"] = stepControls }
+        if let titleStrip { views["title"] = titleStrip }
+        return views
     }
 
     // MARK: - Settings

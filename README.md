@@ -75,6 +75,9 @@ silently while still moving the highlights.
 Earmark opens **EPUB**, **PDF**, **plain text** (`.txt`, `.md`) and **HTML**.
 Plain text is split into chapters at headings like "Chapter 12".
 
+The first time Earmark opens, a short tour points out the controls. Skip it
+any time; **Help → Show Tutorial** plays it again.
+
 Open a book with **⌘O**, from **File → Open Recent**, by dragging it onto the
 Dock icon, or with **Open With → Earmark** in Finder. Every book reopens where
 you left off, and Earmark starts with the last one you were reading. Your place
