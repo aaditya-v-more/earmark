@@ -1,0 +1,20 @@
+:root { color-scheme: light dark; }
+html, body { background: #FAF8F3 !important; color: #222 !important; }
+body {
+  max-width: 36em;
+  margin: 0 auto !important;
+  padding: 2.5em 1.75em 45vh !important;
+  font: 19px/1.65 "Iowan Old Style", "Palatino", Georgia, serif !important;
+  -webkit-font-smoothing: antialiased;
+}
+p, li, div, span, blockquote { font-family: inherit !important; }
+img, svg { max-width: 100%; height: auto; }
+a { color: inherit; }
+::highlight(em-sentence) { background-color: rgba(250, 204, 21, 0.26); }
+::highlight(em-word) { background-color: rgba(234, 120, 20, 0.55); }
+
+@media (prefers-color-scheme: dark) {
+  html, body { background: #1B1B1D !important; color: #E4E2DD !important; }
+  ::highlight(em-sentence) { background-color: rgba(250, 204, 21, 0.16); }
+  ::highlight(em-word) { background-color: rgba(234, 120, 20, 0.5); }
+}
