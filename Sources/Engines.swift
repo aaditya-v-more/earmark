@@ -73,6 +73,8 @@ struct PluginConfig: Codable {
     var url: String?
     var body: [String: AnyCodable]?
     var command: [String]?
+    /// A URL that lists the plugin's voices as JSON: [{"id", "name", "language", "gender"}].
+    var voices: String?
     /// "engine": the plugin receives the speed. "player": Earmark speeds up playback (up to 2x).
     var speed: String?
     var enabled: Bool?
@@ -86,9 +88,9 @@ struct PluginConfig: Codable {
     {
       "engines": [
         {
-          "name": "Google sfg",
+          "name": "Google",
           "url": "http://127.0.0.1:5591/speak",
-          "body": { "speaker": "sfg" },
+          "voices": "http://127.0.0.1:5591/voices",
           "speed": "engine"
         },
         {
@@ -114,6 +116,21 @@ struct PluginConfig: Codable {
     }
 }
 
+struct PluginVoice: Codable {
+    var id: String
+    var name: String
+    var language: String?
+    var gender: String?
+
+    static func fetch(_ config: PluginConfig) async -> [PluginVoice]? {
+        guard let url = config.voices.flatMap(URL.init(string:)) else { return nil }
+        var request = URLRequest(url: url, timeoutInterval: 3)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        guard let (data, _) = try? await URLSession.shared.data(for: request) else { return nil }
+        return try? JSONDecoder().decode([PluginVoice].self, from: data)
+    }
+}
+
 /// Any JSON value, so plugin request bodies can carry whatever the plugin wants.
 struct AnyCodable: Codable {
     let value: Any
@@ -136,6 +153,7 @@ final class PluginEngine: SpeechEngine {
     var onFinish: (() -> Void)?
     var onError: ((String) -> Void)?
     private let config: PluginConfig
+    private let voice: String?
     private var cache: [String: Task<Data, Error>] = [:]
     private var player: AVAudioPlayer?
     private var words: [(range: NSRange, start: Double)] = []
@@ -143,8 +161,9 @@ final class PluginEngine: SpeechEngine {
     private var ticker: Timer?
     private var generation = 0
 
-    init(config: PluginConfig) {
+    init(config: PluginConfig, voice: String?) {
         self.config = config
+        self.voice = voice
     }
 
     private var engineSpeed: Bool { config.speed != "player" }
@@ -196,8 +215,9 @@ final class PluginEngine: SpeechEngine {
         if let task = cache[k] { return task }
         if cache.count > 8 { cache.removeAll() }
         let config = config
+        let voice = voice
         let s = engineSpeed ? speed : 1
-        let task = Task.detached { try await Self.synthesize(config, text: text, speed: s) }
+        let task = Task.detached { try await Self.synthesize(config, voice: voice, text: text, speed: s) }
         cache[k] = task
         return task
     }
@@ -265,10 +285,11 @@ final class PluginEngine: SpeechEngine {
         }
     }
 
-    static func synthesize(_ config: PluginConfig, text: String, speed: Double) async throws -> Data {
+    static func synthesize(_ config: PluginConfig, voice: String?, text: String, speed: Double) async throws -> Data {
         if let url = config.url.flatMap(URL.init(string:)) {
             var body = (config.body ?? [:]).mapValues(\.value)
             body["text"] = text
+            if let voice { body["voice"] = voice }
             body["rate"] = speed
             var request = URLRequest(url: url, timeoutInterval: 120)
             request.httpMethod = "POST"
@@ -289,6 +310,7 @@ final class PluginEngine: SpeechEngine {
         let args = command.map {
             $0.replacingOccurrences(of: "{out}", with: out.path)
                 .replacingOccurrences(of: "{rate}", with: String(speed))
+                .replacingOccurrences(of: "{voice}", with: voice ?? "")
                 .replacingOccurrences(of: "{text}", with: text)
         }
         let process = Process()

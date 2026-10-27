@@ -21,6 +21,7 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
     private var paused = false
     private var engine: SpeechEngine?
     private var plugins: [PluginConfig] = []
+    private var pluginVoices: [String: [PluginVoice]] = [:]
 
     private let defaults = UserDefaults.standard
     private static let speeds: [Double] = [0.75, 1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75, 3, 3.5, 4]
@@ -62,8 +63,7 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
         buildLayout()
         window.setFrameAutosaveName("Reader")
         if !window.setFrameUsingName("Reader") { window.center() }
-        plugins = PluginConfig.load()
-        rebuildVoiceMenu()
+        reloadPlugins()
         rebuildSpeedMenu()
     }
 
@@ -163,12 +163,28 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
         let voices = AVSpeechSynthesisVoice.speechVoices()
             .filter { $0.language.hasPrefix(lang) }
             .sorted { $0.quality.rawValue != $1.quality.rawValue ? $0.quality.rawValue > $1.quality.rawValue : $0.name < $1.name }
-        if !plugins.isEmpty {
-            menu.addItem(.sectionHeader(title: "Plugins"))
-            for p in plugins {
-                let item = NSMenuItem(title: p.name, action: nil, keyEquivalent: "")
-                item.representedObject = "plugin:" + p.name
-                menu.addItem(item)
+        func add(_ title: String, _ key: String) {
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.representedObject = key
+            menu.addItem(item)
+        }
+        for p in plugins {
+            menu.addItem(.sectionHeader(title: p.name))
+            guard p.voices != nil else { add(p.name, "plugin:" + p.name); continue }
+            let prefix = "plugin:" + p.name + "|"
+            let listed = (pluginVoices[p.name] ?? []).filter { ($0.language ?? lang).lowercased().hasPrefix(lang.lowercased()) }
+            for v in listed {
+                let detail = [v.language, v.gender].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
+                add(detail.isEmpty ? v.name : "\(v.name) — \(detail)", prefix + v.id)
+            }
+            // Keep the chosen voice on the menu while the list is still loading.
+            if let key = voiceKey, key.hasPrefix(prefix), pluginVoices[p.name] == nil {
+                add(String(key.dropFirst(prefix.count)).components(separatedBy: "/").last ?? key, key)
+            }
+            if pluginVoices[p.name]?.isEmpty ?? true, !(voiceKey?.hasPrefix(prefix) ?? false) {
+                let off = NSMenuItem(title: pluginVoices[p.name] == nil ? "Not running" : "No voices", action: nil, keyEquivalent: "")
+                off.isEnabled = false
+                menu.addItem(off)
             }
         }
         menu.addItem(.sectionHeader(title: "System voices"))
@@ -184,8 +200,10 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
         voiceMenu.menu = menu
         let selectable = menu.items.filter { ($0.representedObject as? String)?.contains(":") == true }
         let chosen = selectable.first { $0.representedObject as? String == voiceKey } ?? selectable.first { ($0.representedObject as? String)?.hasPrefix("system:") == true }
-        if let chosen { voiceMenu.select(chosen); voiceKey = chosen.representedObject as? String }
-        engine = nil
+        voiceMenu.autoenablesItems = false
+        if let chosen { voiceMenu.select(chosen) }
+        // The engine follows the menu; the saved choice changes only when the reader picks a voice.
+        if engine != nil && currentVoiceKey != engineKey { engine?.stop(); engine = nil }
     }
 
     private func rebuildChapterMenu() {
@@ -258,8 +276,19 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
 
     func reloadPlugins() {
         plugins = PluginConfig.load()
+        pluginVoices = [:]
         rebuildVoiceMenu()
+        for p in plugins where p.voices != nil {
+            Task { @MainActor in
+                if let list = await PluginVoice.fetch(p) { self.pluginVoices[p.name] = list }
+                else { self.pluginVoices[p.name] = nil }
+                self.rebuildVoiceMenu()
+            }
+        }
     }
+
+    private var currentVoiceKey: String? { voiceMenu.selectedItem?.representedObject as? String }
+    private var engineKey: String?
 
     // MARK: - Book
 
@@ -355,13 +384,19 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
 
     private func makeEngine() -> SpeechEngine {
         if let engine { return engine }
-        let key = voiceKey ?? ""
+        let key = currentVoiceKey ?? ""
         let made: SpeechEngine
-        if key.hasPrefix("plugin:"), let config = plugins.first(where: { "plugin:" + $0.name == key }) {
-            made = PluginEngine(config: config)
+        if key.hasPrefix("plugin:") {
+            let rest = key.dropFirst("plugin:".count)
+            let parts = rest.split(separator: "|", maxSplits: 1).map(String.init)
+            guard let config = plugins.first(where: { $0.name == parts[0] }) else {
+                return SystemEngine(voiceIdentifier: "")
+            }
+            made = PluginEngine(config: config, voice: parts.count > 1 ? parts[1] : nil)
         } else {
             made = SystemEngine(voiceIdentifier: String(key.dropFirst("system:".count)))
         }
+        engineKey = key
         made.onWord = { [weak self] range in self?.highlight(word: range) }
         made.onFinish = { [weak self] in self?.advance() }
         made.onError = { [weak self] message in

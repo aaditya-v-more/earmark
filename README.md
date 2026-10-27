@@ -45,7 +45,13 @@ under a second and quits at once. It remembers your place in every book.
 
 Requires macOS 14 or later, on Apple Silicon or Intel.
 
-Download **Earmark.zip** from
+With [Homebrew](https://brew.sh):
+
+```sh
+brew install --cask aaditya-v-more/tap/earmark
+```
+
+Or download **Earmark.zip** from
 [Releases](https://github.com/aaditya-v-more/earmark/releases/latest), unzip it
 and move **Earmark** to Applications. Earmark is ad hoc signed, not notarised.
 On first launch, right-click it and choose **Open**, or allow it in
@@ -100,9 +106,9 @@ current one plays, so there are no gaps.
 {
   "engines": [
     {
-      "name": "Google sfg",
+      "name": "Google",
       "url": "http://127.0.0.1:5591/speak",
-      "body": { "speaker": "sfg" },
+      "voices": "http://127.0.0.1:5591/voices",
       "speed": "engine"
     },
     {
@@ -117,7 +123,9 @@ current one plays, so there are no gaps.
 | Field | |
 |---|---|
 | `url` | Earmark POSTs JSON: your `body` plus `text` and `rate`. The reply is the WAV file. |
-| `command` | The sentence arrives on stdin. `{out}` is the WAV path to write, `{text}` and `{rate}` are also replaced. |
+| `voices` | Optional. A URL returning `[{"id", "name", "language", "gender"}]`. Each voice gets its own menu entry, and the chosen `id` is sent as `voice`. |
+| `command` | The sentence arrives on stdin. `{out}` is the WAV path to write, and `{text}`, `{rate}` and `{voice}` are also replaced. |
+| `body` | Optional extra fields to send with every request. |
 | `speed` | `engine` passes the speed to the plugin as `rate`. `player` speeds up playback instead, up to 2×. |
 | `enabled` | `false` hides the plugin. |
 
@@ -126,7 +134,9 @@ lengths and punctuation pauses. It stays close for most voices.
 
 The first entry works with
 [google-tts-local](https://github.com/aaditya-v-more/google-tts-local), which
-runs Android's Google voices on a Mac. Start its server and pick **Google sfg**.
+runs the 51 Google voices from Android and ChromeOS on a Mac, in six
+languages. Start its server and they appear under **Google**, filtered to the
+book's language. Its `sfg` voice is the default US English voice on Android.
 
 ## How it works
 
