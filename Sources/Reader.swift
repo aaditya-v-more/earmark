@@ -17,6 +17,7 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
     private let findField = NSSearchField()
     private weak var titleLabel: NSTextField?
     private weak var stepControls: NSView?
+    private var sleepButton: NSButton?
     private weak var titleStrip: NSView?
 
     private var book: Book?
@@ -160,6 +161,15 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
         ])
         controls.spacing = 14
         stepControls = controls
+        let moon = NSButton(title: "", image: NSImage(systemSymbolName: "moon.zzz.fill", accessibilityDescription: "Sleep timer")!,
+                            target: self, action: #selector(restartSleepTimer))
+        moon.isBordered = false
+        moon.imagePosition = .imageLeading
+        moon.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        moon.symbolConfiguration = .init(pointSize: 11, weight: .medium)
+        moon.contentTintColor = .secondaryLabelColor
+        moon.isHidden = true
+        sleepButton = moon
         findField.placeholderString = "Find in book"
         findField.controlSize = .small
         findField.font = .systemFont(ofSize: 12)
@@ -169,7 +179,7 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
         findField.target = self
         findField.action = #selector(findFieldReturned)
         findField.widthAnchor.constraint(equalToConstant: 170).isActive = true
-        let bar = DragStack(views: [chapterMenu, status, findField, NSView(), controls, NSView(), voiceMenu, speedMenu])
+        let bar = DragStack(views: [chapterMenu, status, findField, NSView(), controls, NSView(), moon, voiceMenu, speedMenu])
         bar.spacing = 10
         bar.edgeInsets = NSEdgeInsets(top: 6, left: 14, bottom: 6, right: 14)
         bar.setHuggingPriority(.defaultHigh, for: .vertical)
@@ -284,8 +294,6 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
         parts.append("\(Int(((Double(chapter) + within) / Double(max(total, 1)) * 100).rounded()))%")
         if let fallbackNote { parts.append(fallbackNote) }
         if let taskNote { parts.append(taskNote) }
-        if stopAtChapterEnd { parts.append("stops at chapter end") }
-        if let sleepDeadline { parts.append("sleep in \(max(1, Int(sleepDeadline.timeIntervalSinceNow / 60)))m") }
         status.stringValue = parts.joined(separator: " · ")
     }
 
@@ -655,8 +663,9 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
             sentence = next
             speakCurrent()
         } else if stopAtChapterEnd {
-            stopAtChapterEnd = false
+            armedSleep = 0
             stopSpeaking()
+            updateSleepButton()
             if let book, chapter + 1 < book.chapterCount { load(chapter: chapter + 1, at: 0, autoplay: false) }
         } else if let book, chapter + 1 < book.chapterCount {
             load(chapter: chapter + 1, at: 0, autoplay: true)
@@ -705,6 +714,7 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
             engine?.pause()
         } else if playing && paused {
             paused = false
+            armRememberedSleep()
             if advanceOnResume {
                 advanceOnResume = false
                 advanceNow()
@@ -717,6 +727,7 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
         } else {
             playing = true
             paused = false
+            armRememberedSleep()
             guard Prefs.startFromVisible else { speakCurrent(); return updatePlayButton() }
             // Start where the reader is looking if the last sentence has scrolled out of view.
             surface.visibleStart(current: sentence) { [weak self] start, shown in
@@ -816,34 +827,87 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
 
     // MARK: - Sleep timer
 
+    /// Minutes the armed timer runs for (-1 = end of chapter, 0 = none); clicking the moon restarts it.
+    private var armedSleep = 0
+    private var sleepTicker: Timer?
+
     @objc func sleepTimerChosen(_ sender: NSMenuItem) {
+        // The menu choice is also what Settings remembers for next time.
+        UserDefaults.standard.set(sender.tag, forKey: "sleepMinutes")
+        armSleep(sender.tag)
+        NotificationCenter.default.post(name: Prefs.changed, object: nil)
+    }
+
+    private func armSleep(_ minutes: Int) {
         cancelSleepTimer()
-        stopAtChapterEnd = false
-        if sender.tag == -1 {
-            stopAtChapterEnd = true
-        } else if sender.tag > 0 {
+        armedSleep = minutes
+        stopAtChapterEnd = minutes == -1
+        if minutes > 0 {
             let work = DispatchWorkItem { [weak self] in
-                guard let self, self.playing, !self.paused else { return }
-                self.togglePlay()
+                guard let self else { return }
                 self.sleepDeadline = nil
+                self.armedSleep = 0
+                if self.playing && !self.paused { self.togglePlay() }
+                self.updateSleepButton()
                 self.showProgress()
             }
             sleepTimer = work
-            sleepDeadline = Date().addingTimeInterval(TimeInterval(sender.tag * 60))
-            DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(sender.tag * 60), execute: work)
-            // Keep the minutes left on the status line current.
-            Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] timer in
-                guard let self, self.sleepDeadline != nil else { return timer.invalidate() }
-                self.showProgress()
+            sleepDeadline = Date().addingTimeInterval(TimeInterval(minutes * 60))
+            DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(minutes * 60), execute: work)
+            // Keep the minutes left current.
+            let ticker = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateSleepButton(); self?.showProgress() }
             }
+            RunLoop.main.add(ticker, forMode: .common)
+            sleepTicker = ticker
         }
+        updateSleepButton()
         showProgress()
+    }
+
+    /// Clicking the timer in the bar starts it over at its full length.
+    @objc func restartSleepTimer() {
+        guard armedSleep != 0 else { return }
+        armSleep(armedSleep)
+        say("Sleep timer restarted")
+    }
+
+    /// Settings → Remember: playing again arms the remembered timer when none is running.
+    private func armRememberedSleep() {
+        guard Prefs.sleepRemember, armedSleep == 0, Prefs.sleepMinutes != 0 else { return }
+        armSleep(Prefs.sleepMinutes)
+    }
+
+    /// The timer setting changed (in Settings or the menu): apply it to a running timer, or start it if reading.
+    private var lastSleepSetting = Prefs.sleepMinutes
+
+    private func applySleepPrefs() {
+        let wanted = Prefs.sleepMinutes
+        guard wanted != lastSleepSetting else { return }
+        lastSleepSetting = wanted
+        if wanted != armedSleep && (armedSleep != 0 || (playing && !paused) || wanted == 0) { armSleep(wanted) }
     }
 
     private func cancelSleepTimer() {
         sleepTimer?.cancel()
         sleepTimer = nil
         sleepDeadline = nil
+        sleepTicker?.invalidate()
+        sleepTicker = nil
+        stopAtChapterEnd = false
+    }
+
+    private func updateSleepButton() {
+        guard let button = sleepButton else { return }
+        button.isHidden = armedSleep == 0
+        if armedSleep == -1 {
+            button.title = " end"
+            button.toolTip = "Stops at the end of the chapter. Click to keep it set; choose Off in Sleep Timer to cancel."
+        } else if let sleepDeadline {
+            let minutes = max(1, Int((sleepDeadline.timeIntervalSinceNow / 60).rounded(.up)))
+            button.title = " \(minutes)m"
+            button.toolTip = "Sleep timer: \(minutes) min left. Click to restart it at \(armedSleep) min."
+        }
     }
 
     // MARK: - Tour
@@ -860,6 +924,7 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
     // MARK: - Settings
 
     private func applyPrefs() {
+        applySleepPrefs()
         webSurface.setLayout(size: textSize, width: columnWidth)
         let appearance: NSAppearance.Name? = ["light": .aqua, "sepia": .aqua, "dark": .darkAqua][Prefs.theme]
         window?.appearance = appearance.flatMap(NSAppearance.init(named:))

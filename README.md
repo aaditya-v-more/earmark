@@ -138,11 +138,15 @@ so Earmark behaves as described above until you change them:
 - **Start from the first sentence on screen** when pressing Play after scrolling away
 - **Jump by**: how many sentences the previous and next keys move
 - **Pauses** after each sentence, paragraph and chapter, in milliseconds
+- **Sleep timer** length, and whether to **Remember** it for every Play
 - **Keep pasted text for** a number of days
 - **Web serials**: the most chapters to follow
 
-**Playback → Sleep Timer** stops after 15 to 60 minutes, or at the end of the
-chapter. Unplugging headphones pauses reading instead of switching to the
+**Sleep timer**: set it from **Playback → Sleep Timer** or in Settings, from
+15 minutes to 2 hours, or the end of the chapter. While it runs, a moon with
+the minutes left sits in the control bar; click it to start the timer over.
+Tick **Remember** in Settings and the same timer starts each time you press
+Play. Unplugging headphones pauses reading instead of switching to the
 speakers. Light and dark mode follow the system.
 
 ### Skipping lines and fixing pronunciation

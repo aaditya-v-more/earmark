@@ -166,7 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func sleepMenu(_ r: ReaderController) -> NSMenuItem {
         let holder = NSMenuItem(title: "Sleep Timer", action: nil, keyEquivalent: "")
         let menu = NSMenu(title: "Sleep Timer")
-        for (title, tag) in [("Off", 0), ("15 Minutes", 15), ("30 Minutes", 30), ("45 Minutes", 45), ("1 Hour", 60), ("End of Chapter", -1)] {
+        for (tag, title) in Prefs.sleepChoices {
             let i = NSMenuItem(title: title, action: #selector(ReaderController.sleepTimerChosen(_:)), keyEquivalent: "")
             i.tag = tag
             i.target = r

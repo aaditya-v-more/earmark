@@ -13,6 +13,11 @@ enum Prefs {
     static var pauseSentence: Int { d.integer(forKey: "pauseSentence") }
     static var pauseParagraph: Int { d.integer(forKey: "pauseParagraph") }
     static var pauseChapter: Int { d.integer(forKey: "pauseChapter") }
+    /// Sleep timer length in minutes; -1 = end of chapter, 0 = off.
+    static var sleepMinutes: Int { d.integer(forKey: "sleepMinutes") }
+    static var sleepRemember: Bool { d.bool(forKey: "sleepRemember") }
+    static let sleepChoices: [(Int, String)] = [(0, "Off"), (15, "15 minutes"), (30, "30 minutes"), (45, "45 minutes"),
+                                                (60, "1 hour"), (90, "1½ hours"), (120, "2 hours"), (-1, "End of chapter")]
     static var pasteDays: Int { max(1, d.object(forKey: "pasteDays") as? Int ?? 30) }
     static var webChapterLimit: Int { max(1, d.object(forKey: "webChapterLimit") as? Int ?? 100) }
 
@@ -35,7 +40,7 @@ enum Prefs {
 /// One small window of options, grouped as Reading, Playback and Sources.
 final class SettingsController: NSWindowController {
     init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 400),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 440),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Settings"
         super.init(window: window)
@@ -74,6 +79,14 @@ final class SettingsController: NSWindowController {
         row("Pause after sentence:", stepper(key: "pauseSentence", value: Prefs.pauseSentence, range: 0...3000, unit: "ms", step: 50))
         row("Pause after paragraph:", stepper(key: "pauseParagraph", value: Prefs.pauseParagraph, range: 0...5000, unit: "ms", step: 100))
         row("Pause after chapter:", stepper(key: "pauseChapter", value: Prefs.pauseChapter, range: 0...10000, unit: "ms", step: 250))
+        let sleep = popup(Prefs.sleepChoices.map { (String($0.0), $0.1) }, key: "sleepMinutes", current: String(Prefs.sleepMinutes), asInt: true)
+        let remember = NSButton(checkboxWithTitle: "Remember", target: self, action: #selector(toggled(_:)))
+        remember.identifier = NSUserInterfaceItemIdentifier("sleepRemember")
+        remember.state = Prefs.sleepRemember ? .on : .off
+        remember.toolTip = "Start this timer again whenever you press Play"
+        let sleepRow = NSStackView(views: [sleep, remember])
+        sleepRow.spacing = 12
+        row("Sleep timer:", sleepRow)
 
         header("Sources")
         row("Keep pasted text for:", stepper(key: "pasteDays", value: Prefs.pasteDays, range: 1...365, unit: "days"))
@@ -98,14 +111,14 @@ final class SettingsController: NSWindowController {
         ])
     }
 
-    private func popup(_ items: [(String, String)], key: String, current: String, asDouble: Bool = false) -> NSPopUpButton {
+    private func popup(_ items: [(String, String)], key: String, current: String, asDouble: Bool = false, asInt: Bool = false) -> NSPopUpButton {
         let p = NSPopUpButton()
         for (value, title) in items {
             p.addItem(withTitle: title)
             p.lastItem?.representedObject = value
         }
         p.selectItem(at: items.firstIndex { $0.0 == current } ?? 0)
-        p.identifier = NSUserInterfaceItemIdentifier(key + (asDouble ? "#double" : ""))
+        p.identifier = NSUserInterfaceItemIdentifier(key + (asDouble ? "#double" : asInt ? "#int" : ""))
         p.target = self
         p.action = #selector(picked(_:))
         return p
@@ -140,6 +153,8 @@ final class SettingsController: NSWindowController {
         guard let raw = sender.identifier?.rawValue, let value = sender.selectedItem?.representedObject as? String else { return }
         if raw.hasSuffix("#double") {
             d.set(Double(value), forKey: String(raw.dropLast("#double".count)))
+        } else if raw.hasSuffix("#int") {
+            d.set(Int(value), forKey: String(raw.dropLast("#int".count)))
         } else {
             d.set(value, forKey: raw)
         }
