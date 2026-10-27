@@ -193,6 +193,27 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
             effect.heightAnchor.constraint(equalToConstant: 40),
         ])
         install(surface)
+        addDonateButton()
+    }
+
+    /// A small Ko-fi link in the top-right corner of the title bar.
+    private func addDonateButton() {
+        let button = NSButton(title: " Donate", image: NSImage(systemSymbolName: "heart.fill", accessibilityDescription: nil)!,
+                              target: NSApp.delegate, action: NSSelectorFromString("openKofi:"))
+        button.isBordered = false
+        button.imagePosition = .imageLeading
+        button.font = .systemFont(ofSize: 11, weight: .medium)
+        button.contentTintColor = NSColor(red: 1, green: 0.37, blue: 0.36, alpha: 1)
+        button.symbolConfiguration = .init(pointSize: 10, weight: .semibold)
+        button.toolTip = "Support Earmark on Ko-fi"
+        button.sizeToFit()
+        let holder = NSView(frame: NSRect(x: 0, y: 0, width: button.frame.width + 16, height: 28))
+        button.frame.origin = NSPoint(x: 4, y: (28 - button.frame.height) / 2)
+        holder.addSubview(button)
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.view = holder
+        accessory.layoutAttribute = .trailing
+        window?.addTitlebarAccessoryViewController(accessory)
     }
 
     private func install(_ new: Surface) {

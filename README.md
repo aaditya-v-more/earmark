@@ -195,5 +195,6 @@ plays through `AVAudioPlayer`.
 [MIT](LICENSE). The screenshot shows *Pride and Prejudice* from
 [Project Gutenberg](https://www.gutenberg.org/ebooks/1342).
 
-If Earmark gets you through a long series, you can
+The ♥ Donate button in the top-right corner of the window opens Ko-fi. If
+Earmark gets you through a long series, you can
 [buy me a coffee on Ko-fi](https://ko-fi.com/aadityavmore).
