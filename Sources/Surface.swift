@@ -174,10 +174,14 @@ final class PDFSurface: Surface {
         }
         pdfView.highlightedSelections = shown
         guard follow else { return }
+        // Same as the web view: once the highlight nears the bottom, put it about 12% from the top.
         let rect = pdfView.convert(focus.bounds(for: page), from: page)
-        if !pdfView.bounds.insetBy(dx: 0, dy: pdfView.bounds.height * 0.15).contains(rect) {
+        let h = pdfView.bounds.height
+        let fromTop = pdfView.isFlipped ? rect.minY : h - rect.maxY
+        let bottomFromTop = fromTop + rect.height
+        if fromTop < h * 0.04 || bottomFromTop > h * 0.82 {
             var target = focus.bounds(for: page)
-            target.origin.y += pdfView.bounds.height * 0.3 / max(pdfView.scaleFactor, 0.1)
+            target.origin.y += h * 0.12 / max(pdfView.scaleFactor, 0.1)
             pdfView.go(to: target, on: page)
         }
     }

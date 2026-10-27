@@ -102,11 +102,12 @@
     }
   }
 
+  // When the highlight nears the bottom (or leaves the top), scroll it to about 12% from the top,
+  // so most of the screen shows what comes next.
   function reveal(range) {
     const rect = range.getBoundingClientRect();
-    const margin = innerHeight * 0.18;
-    if (rect.top < margin || rect.bottom > innerHeight - margin) {
-      scrollBy({ top: rect.top - innerHeight * 0.33, behavior: 'smooth' });
+    if (rect.top < innerHeight * 0.04 || rect.bottom > innerHeight * 0.82) {
+      scrollBy({ top: rect.top - innerHeight * 0.12, behavior: 'smooth' });
     }
   }
 

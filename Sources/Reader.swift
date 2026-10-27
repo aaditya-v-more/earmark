@@ -15,6 +15,7 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
     private let playButton = NSButton()
     private let status = NSTextField(labelWithString: "")
     private let findField = NSSearchField()
+    private weak var titleLabel: NSTextField?
 
     private var book: Book?
     private var chapter = 0
@@ -73,6 +74,8 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
         window.titlebarAppearsTransparent = true
         window.minSize = NSSize(width: 420, height: 320)
         window.title = appName
+        // The title is drawn in the drag strip instead, so grabbing it moves the window.
+        window.titleVisibility = .hidden
         super.init(window: window)
         for s in [webSurface, pdfSurface] as [Surface] {
             s.onReady = { [weak self] texts in self?.chapterReady(texts) }
@@ -165,11 +168,17 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
         line.boxType = .separator
         // An invisible strip along the top moves the window, where the title bar would be.
         let grip = DragStrip()
+        grip.title.stringValue = appName
+        titleLabel = grip.title
+        // A blurred band behind the title, like the control bar, so text scrolls under it cleanly.
+        let topBand = NSVisualEffectView()
+        topBand.material = .titlebar
 
-        for v in [page, effect, line, bar, grip] as [NSView] { v.translatesAutoresizingMaskIntoConstraints = false }
+        for v in [page, effect, line, bar, grip, topBand] as [NSView] { v.translatesAutoresizingMaskIntoConstraints = false }
         content.addSubview(page)
         content.addSubview(line)
         content.addSubview(effect)
+        content.addSubview(topBand)
         content.addSubview(grip)
         NSLayoutConstraint.activate([
             page.topAnchor.constraint(equalTo: content.topAnchor),
@@ -180,6 +189,10 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
             grip.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 80),
             grip.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             grip.heightAnchor.constraint(equalToConstant: 28),
+            topBand.topAnchor.constraint(equalTo: content.topAnchor),
+            topBand.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            topBand.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            topBand.heightAnchor.constraint(equalToConstant: 28),
             line.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             line.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             line.bottomAnchor.constraint(equalTo: effect.topAnchor),
@@ -416,6 +429,7 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
             let book = try Book(file: url)
             self.book = book
             window?.title = book.title
+            titleLabel?.stringValue = book.title
             NSDocumentController.shared.noteNewRecentDocumentURL(url)
             defaults.set(url.path, forKey: "lastBook")
             install(book.pdf != nil ? pdfSurface : webSurface)
@@ -924,7 +938,31 @@ private final class DragStack: NSStackView {
 
 /// A transparent strip that moves the window (and zooms it on double-click) instead of selecting text.
 private final class DragStrip: NSView {
+    let title = NSTextField(labelWithString: "")
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        title.textColor = .secondaryLabelColor
+        title.lineBreakMode = .byTruncatingTail
+        title.translatesAutoresizingMaskIntoConstraints = false
+        title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        addSubview(title)
+        NSLayoutConstraint.activate([
+            title.leadingAnchor.constraint(equalTo: leadingAnchor),
+            title.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -90),
+            title.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
     override var mouseDownCanMoveWindow: Bool { true }
+
+    // The title is part of the strip: clicks on it move the window too.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        frame.contains(point) ? self : nil
+    }
 
     override func mouseDown(with event: NSEvent) {
         if event.clickCount == 2 {
