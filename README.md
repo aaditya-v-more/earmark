@@ -5,7 +5,7 @@
 <h1>Earmark</h1>
 
 <p>
-  <b>A tiny Mac app that reads your EPUBs out loud.</b><br>
+  <b>A tiny Mac app that reads your books out loud.</b><br>
   It follows along, sentence by sentence and word by word.
 </p>
 
@@ -35,7 +35,7 @@
 </div>
 
 Earmark is for listening to long books, especially web novels, at whatever
-speed suits you. Open an EPUB and press Space. The sentence being read is
+speed suits you. Open an EPUB, PDF or text file and press Space. The sentence being read is
 shaded, the word being spoken stands out, and the page scrolls along.
 
 It is one window with one control bar. The app is under 1 MB, opens in
@@ -72,19 +72,44 @@ silently while still moving the highlights.
 
 ## Reading
 
-Open a book with **⌘O**, by dragging it onto the Dock icon, or with
-**Open With → Earmark** in Finder. The last book reopens where you left off.
+Earmark opens **EPUB**, **PDF**, **plain text** (`.txt`, `.md`) and **HTML**.
+Plain text is split into chapters at headings like "Chapter 12".
+
+Open a book with **⌘O**, from **File → Open Recent**, by dragging it onto the
+Dock icon, or with **Open With → Earmark** in Finder. Every book reopens where
+you left off, and Earmark starts with the last one you were reading. Your place
+is tied to the book itself, so moving or re-downloading the file keeps it.
 
 | Key | |
 |---|---|
 | Space or ⌘P | Play / pause |
 | ⌘→ / ⌘← | Next / previous sentence |
 | ⌘] / ⌘[ | Next / previous chapter |
+| ⌘G | Go to a chapter by number or title (a page, in a PDF) |
 | ⌘= / ⌘- | Faster / slower |
+| Media keys | Play / pause, next / previous sentence, from the keyboard, AirPods or Control Center |
 
-Click any sentence to start reading from it. The chapter menu on the left
-follows the reading position, and playback carries on into the next chapter
-by itself. Light and dark mode follow the system.
+Click any sentence to start reading from it. The status line shows where you
+are in the book, and the chapter menu follows along. Playback carries on into
+the next chapter by itself, without a gap: the next chapter's first sentences
+are prepared while the current one finishes. Scroll back to re-read and the
+page stays put for a few seconds before following the voice again. After a
+pause of more than 30 seconds, the sentence starts over. Drag the window by
+its top edge or the empty parts of the control bar.
+
+**Playback → Sleep Timer** stops after 15 to 60 minutes, or at the end of the
+chapter. Light and dark mode follow the system.
+
+### Skipping lines and fixing pronunciation
+
+Web novels repeat lines like "Translator: … Editor: …" in every chapter.
+Earmark skips any sentence that matches a pattern in
+`~/Library/Application Support/Earmark/skip.txt`, which starts with a few
+common ones. To fix how a word is said, add `from => to` lines to
+`replacements.txt` in the same folder, such as `Lv. => level`. The page keeps
+the original text and the highlight still lands on it. Both files open from
+the bottom of the voice menu, and **File → Reload Settings** (⌘R) applies
+changes.
 
 ## Voices
 
@@ -114,6 +139,7 @@ current one plays, so there are no gaps.
       "name": "Google",
       "url": "http://127.0.0.1:5591/speak",
       "voices": "http://127.0.0.1:5591/voices",
+      "start": ["/usr/local/bin/docker", "start", "gtts"],
       "speed": "engine"
     },
     {
@@ -132,7 +158,12 @@ current one plays, so there are no gaps.
 | `command` | The sentence arrives on stdin. `{out}` is the WAV path to write, and `{text}`, `{rate}` and `{voice}` are also replaced. |
 | `body` | Optional extra fields to send with every request. |
 | `speed` | `engine` passes the speed to the plugin as `rate`. `player` speeds up playback instead, up to 2×. |
+| `start` | Optional. A command that starts the plugin's server, such as `["/usr/local/bin/docker", "start", "gtts"]`. Earmark runs it once if the server can't be reached, then retries. |
 | `enabled` | `false` hides the plugin. |
+
+If a plugin still can't be reached, Earmark carries on with the best system
+voice for the book and says so on the status line. Choose a voice or press ⌘R
+to try the plugin again.
 
 Plugins return audio only, so Earmark times the words from the audio itself.
 It finds the pauses the voice makes, matches them to the sentence's
@@ -147,7 +178,8 @@ book's language. Its `sfg` voice is the default US English voice on Android.
 ## How it works
 
 Earmark unzips each book once into `~/Library/Caches/Earmark` and shows
-chapters in a WebKit view with a reading stylesheet on top. A small script
+chapters in a WebKit view with a reading stylesheet on top. PDFs are shown with
+PDFKit and read page by page. A small script
 splits the chapter into sentences with `Intl.Segmenter`. It paints the
 highlights in a layer behind the text, so the book's own markup is never
 changed. System voices speak through `AVSpeechSynthesizer`, and plugin audio

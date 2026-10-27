@@ -25,6 +25,12 @@
 			<key>LSHandlerRank</key><string>Alternate</string>
 			<key>LSItemContentTypes</key><array><string>org.idpf.epub-container</string></array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeName</key><string>Document</string>
+			<key>CFBundleTypeRole</key><string>Viewer</string>
+			<key>LSHandlerRank</key><string>Alternate</string>
+			<key>LSItemContentTypes</key><array><string>com.adobe.pdf</string><string>public.plain-text</string><string>public.html</string><string>net.daringfireball.markdown</string></array>
+		</dict>
 	</array>
 </dict>
 </plist>

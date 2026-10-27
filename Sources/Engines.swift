@@ -9,6 +9,8 @@ protocol SpeechEngine: AnyObject {
     var onWord: ((NSRange) -> Void)? { get set }
     var onFinish: (() -> Void)? { get set }
     var onError: ((String) -> Void)? { get set }
+    /// Progress worth showing, such as starting a plugin's server.
+    var onStatus: ((String) -> Void)? { get set }
     func speak(_ text: String, speed: Double)
     func prepare(_ text: String, speed: Double)
     func pause()
@@ -19,6 +21,7 @@ protocol SpeechEngine: AnyObject {
 // MARK: - System voices (includes third-party voice extensions)
 
 final class SystemEngine: NSObject, SpeechEngine, AVSpeechSynthesizerDelegate {
+    var onStatus: ((String) -> Void)?
     var onWord: ((NSRange) -> Void)?
     var onFinish: (() -> Void)?
     var onError: ((String) -> Void)?
@@ -82,6 +85,8 @@ struct PluginConfig: Codable {
     /// "engine": the plugin receives the speed. "player": Earmark speeds up playback (up to 2x).
     var speed: String?
     var enabled: Bool?
+    /// Optional command that starts the plugin's server, run once if it can't be reached.
+    var start: [String]?
 
     static var file: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -95,6 +100,7 @@ struct PluginConfig: Codable {
           "name": "Google",
           "url": "http://127.0.0.1:5591/speak",
           "voices": "http://127.0.0.1:5591/voices",
+          "start": ["/usr/local/bin/docker", "start", "gtts"],
           "speed": "engine"
         },
         {
@@ -153,6 +159,7 @@ struct AnyCodable: Codable {
 }
 
 final class PluginEngine: SpeechEngine {
+    var onStatus: ((String) -> Void)?
     var onWord: ((NSRange) -> Void)?
     var onFinish: (() -> Void)?
     var onError: ((String) -> Void)?
@@ -180,18 +187,50 @@ final class PluginEngine: SpeechEngine {
         stop()
         generation += 1
         let gen = generation
-        let task = audio(for: text, speed: speed)
         Task { @MainActor in
-            do {
-                let data = try await task.value
-                guard gen == self.generation else { return }
-                try self.play(data, text: text, speed: speed)
-            } catch {
-                guard gen == self.generation else { return }
-                self.cache[self.key(text, speed)] = nil
-                self.onError?("\(self.config.name): \(error.localizedDescription)")
+            var attempts = 0
+            while gen == self.generation {
+                do {
+                    let data = try await self.audio(for: text, speed: speed).value
+                    guard gen == self.generation else { return }
+                    try self.play(data, text: text, speed: speed)
+                    return
+                } catch {
+                    guard gen == self.generation else { return }
+                    self.cache[self.key(text, speed)] = nil
+                    // Server not up: start it once if the config says how, then retry for a while.
+                    let unreachable = (error as? URLError).map { [.cannotConnectToHost, .timedOut, .networkConnectionLost, .cannotFindHost].contains($0.code) } ?? false
+                    let started = self.startServerOnce()
+                    let limit = started || Self.startedServers.contains(self.config.name) ? 10 : 3
+                    if unreachable && attempts < limit {
+                        attempts += 1
+                        try? await Task.sleep(for: .seconds(2))
+                        continue
+                    }
+                    self.onError?("\(self.config.name): \(error.localizedDescription)")
+                    return
+                }
             }
         }
+    }
+
+    private static var startedServers: Set<String> = []
+
+    /// Runs the plugin's start command the first time it is needed; true if it ran now.
+    private func startServerOnce() -> Bool {
+        guard let start = config.start, !start.isEmpty, !Self.startedServers.contains(config.name) else { return false }
+        Self.startedServers.insert(config.name)
+        onStatus?("Starting \(config.name)…")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: start[0])
+        process.arguments = Array(start.dropFirst())
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+        process.environment = env
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try? process.run()
+        return true
     }
 
     func pause() {
@@ -243,9 +282,12 @@ final class PluginEngine: SpeechEngine {
 
     private func startTicker() {
         ticker?.invalidate()
-        ticker = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
+        // Common modes keep it running while a menu is open.
+        RunLoop.main.add(timer, forMode: .common)
+        ticker = timer
     }
 
     private func tick() {
@@ -271,7 +313,7 @@ final class PluginEngine: SpeechEngine {
             body["text"] = text
             if let voice { body["voice"] = voice }
             body["rate"] = speed
-            var request = URLRequest(url: url, timeoutInterval: 120)
+            var request = URLRequest(url: url, timeoutInterval: 20)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)

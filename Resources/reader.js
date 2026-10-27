@@ -1,7 +1,8 @@
 // Splits the chapter into sentences and highlights the one being read, plus its current word.
 (() => {
   const BLOCK = /^(P|DIV|H[1-6]|LI|BLOCKQUOTE|PRE|TD|TH|DT|DD|SECTION|ARTICLE|ASIDE|HEADER|FOOTER|FIGCAPTION|TR|TABLE|UL|OL|DL|BODY)$/i;
-  const SKIP = 'script,style,head,rt,rp,noscript';
+  const SKIP = 'script,style,head,rt,rp,noscript,nav';
+  const MAX = 350;
 
   function blockOf(node) {
     let el = node.parentElement;
@@ -9,32 +10,51 @@
     return el;
   }
 
-  // Flatten the text: one entry per text node, with "\n\n" between blocks so paragraphs never merge.
-  const nodes = [];
-  let flat = '';
-  let lastBlock = null;
-  const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, {
-    acceptNode: n => (n.parentElement && !n.parentElement.closest(SKIP)) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT,
-  });
-  for (let n; (n = walker.nextNode());) {
-    const block = blockOf(n);
-    if (block !== lastBlock) {
-      if (flat) flat += '\n\n';
-      lastBlock = block;
+  // Flatten the text: one entry per text node, with "\n\n" between blocks so paragraphs never
+  // merge. Then split it into sentences, cutting very long ones at a comma or similar.
+  function segment(doc) {
+    const nodes = [];
+    let flat = '';
+    let lastBlock = null;
+    const walker = doc.createTreeWalker(doc.body || doc.documentElement, NodeFilter.SHOW_TEXT, {
+      acceptNode: n => (n.parentElement && !n.parentElement.closest(SKIP)) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT,
+    });
+    for (let n; (n = walker.nextNode());) {
+      const block = blockOf(n);
+      if (block !== lastBlock) {
+        if (flat) flat += '\n\n';
+        lastBlock = block;
+      }
+      nodes.push({ node: n, start: flat.length });
+      // Line breaks inside the source markup are just spaces; keep the length so offsets still line up.
+      flat += n.data.replace(/\s/g, ' ');
     }
-    nodes.push({ node: n, start: flat.length });
-    // Line breaks inside the source markup are just spaces; keep the length so offsets still line up.
-    flat += n.data.replace(/\s/g, ' ');
+
+    const root = doc.documentElement;
+    const lang = root.getAttribute('lang') || root.getAttribute('xml:lang') || 'en';
+    const sentences = [];
+    for (const s of new Intl.Segmenter(lang, { granularity: 'sentence' }).segment(flat)) {
+      let a = s.index, b = a + s.segment.length;
+      while (a < b && /\s/.test(flat[a])) a++;
+      while (b > a && /\s/.test(flat[b - 1])) b--;
+      while (b - a > MAX) {
+        const piece = flat.slice(a, a + MAX);
+        let cut = -1;
+        for (const mark of [',', ';', ':', '—', ' ']) {
+          const i = piece.lastIndexOf(mark);
+          if (i > MAX / 3) { cut = i + 1; break; }
+        }
+        if (cut < 0) cut = MAX;
+        sentences.push([a, a + cut]);
+        a += cut;
+        while (a < b && /\s/.test(flat[a])) a++;
+      }
+      if (b > a && /[\p{L}\p{N}]/u.test(flat.slice(a, b))) sentences.push([a, b]);
+    }
+    return { nodes, flat, sentences };
   }
 
-  const lang = document.documentElement.getAttribute('lang') || document.documentElement.getAttribute('xml:lang') || 'en';
-  const sentences = [];
-  for (const s of new Intl.Segmenter(lang, { granularity: 'sentence' }).segment(flat)) {
-    let a = s.index, b = a + s.segment.length;
-    while (a < b && /\s/.test(flat[a])) a++;
-    while (b > a && /\s/.test(flat[b - 1])) b--;
-    if (b > a && /[\p{L}\p{N}]/u.test(flat.slice(a, b))) sentences.push([a, b]);
-  }
+  const { nodes, flat, sentences } = segment(document);
 
   function locate(offset, isEnd) {
     const key = isEnd ? offset - 1 : offset;
@@ -114,7 +134,7 @@
   addEventListener('load', repaint);
 
   window.earmark = {
-    highlight(index, wordStart, wordLength) {
+    highlight(index, wordStart, wordLength, follow = true) {
       const s = sentences[index];
       if (!s) return;
       if (index !== current) {
@@ -123,13 +143,13 @@
         const r = rangeOf(s[0], s[1]);
         paint('sentence', r);
         paint('word', null);
-        reveal(r);
+        if (follow) reveal(r);
       }
       if (wordLength > 0) {
         word = [s[0] + wordStart, Math.min(s[0] + wordStart + wordLength, s[1])];
         const r = rangeOf(word[0], word[1]);
         paint('word', r);
-        reveal(r);
+        if (follow) reveal(r);
       }
     },
     // Index of the last anchor (by id) that comes before the current sentence, or -1.
@@ -156,6 +176,13 @@
     state() {
       const s = sentences[current];
       return (s ? flat.slice(s[0], s[1]) : '') + ' || ' + (word ? flat.slice(word[0], word[1]) : '');
+    },
+    // The first sentences of another chapter's markup, split exactly as if it were open.
+    firstSentences(markup, count) {
+      let doc = new DOMParser().parseFromString(markup, 'application/xhtml+xml');
+      if (doc.getElementsByTagName('parsererror').length) doc = new DOMParser().parseFromString(markup, 'text/html');
+      const seg = segment(doc);
+      return seg.sentences.slice(0, count).map(([a, b]) => seg.flat.slice(a, b));
     },
     clear() {
       current = -1;

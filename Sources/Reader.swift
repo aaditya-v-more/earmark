@@ -1,10 +1,13 @@
 import AppKit
 import AVFoundation
-import WebKit
+import MediaPlayer
 
-/// The single reading window: the chapter on top, a slim control bar below.
-final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavigationDelegate {
-    private let web: WKWebView
+/// The single reading window: the book on top, a slim control bar below.
+final class ReaderController: NSWindowController {
+    private let webSurface = WebSurface()
+    private let pdfSurface = PDFSurface()
+    private var surface: Surface
+    private let page = NSView()
     private let chapterMenu = NSPopUpButton()
     private let voiceMenu = NSPopUpButton()
     private let speedMenu = NSPopUpButton()
@@ -14,14 +17,28 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
     private var book: Book?
     private var chapter = 0
     private var sentences: [String] = []
+    private var skipped: Set<Int> = []
     private var sentence = 0
     private var pendingSentence: Int?
+    private var pendingAnchor: String?
     private var pendingFragment: String?
     private var playing = false
     private var paused = false
+    private var pausedAt: Date?
     private var engine: SpeechEngine?
+    private var engineKey: String?
+    /// Set while a plugin is unreachable and a system voice stands in for it.
+    private var fallbackNote: String?
     private var plugins: [PluginConfig] = []
     private var pluginVoices: [String: [PluginVoice]] = [:]
+    private var rules = TextRules.load()
+    /// Maps the word range the voice reports back to the page, after pronunciation fixes.
+    private var toPage: (NSRange) -> NSRange = { $0 }
+    private var messageUntil = Date.distantPast
+    private var lastManualScroll = Date.distantPast
+    private var sleepTimer: DispatchWorkItem?
+    private var sleepDeadline: Date?
+    private var stopAtChapterEnd = false
 
     private let defaults = UserDefaults.standard
     private static let speeds: [Double] = [0.75, 1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75, 3, 3.5, 4]
@@ -37,20 +54,7 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
     }
 
     init() {
-        let config = WKWebViewConfiguration()
-        let bundle = Bundle.main
-        let js = (try? String(contentsOf: bundle.url(forResource: "reader", withExtension: "js")!, encoding: .utf8)) ?? ""
-        let css = (try? String(contentsOf: bundle.url(forResource: "reader", withExtension: "css")!, encoding: .utf8)) ?? ""
-        let cssLiteral = String(data: try! JSONSerialization.data(withJSONObject: [css], options: [.fragmentsAllowed]), encoding: .utf8)!
-        let style = """
-        (() => { const s = document.createElementNS('http://www.w3.org/1999/xhtml', 'style');
-          s.textContent = \(cssLiteral)[0];
-          (document.head || document.documentElement).appendChild(s); })();
-        """
-        config.userContentController.addUserScript(WKUserScript(source: style, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
-        config.userContentController.addUserScript(WKUserScript(source: js, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
-        web = WKWebView(frame: .zero, configuration: config)
-
+        surface = webSurface
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 860),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
@@ -58,13 +62,25 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
         window.minSize = NSSize(width: 420, height: 320)
         window.title = appName
         super.init(window: window)
-        config.userContentController.add(self, name: "earmark")
-        web.navigationDelegate = self
+        for s in [webSurface, pdfSurface] as [Surface] {
+            s.onReady = { [weak self] texts in self?.chapterReady(texts) }
+            s.onSeek = { [weak self] chapter, index in self?.seek(chapter: chapter, sentence: index) }
+        }
+        webSurface.onLink = { [weak self] url in
+            guard let self, let index = self.book?.spineIndex(of: url) else { return }
+            self.load(chapter: index, at: 0, autoplay: self.playing && !self.paused)
+        }
         buildLayout()
         window.setFrameAutosaveName("Reader")
         if !window.setFrameUsingName("Reader") { window.center() }
         reloadPlugins()
         rebuildSpeedMenu()
+        setUpMediaKeys()
+        NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            // Reading back up: let the page stay where the reader put it for a few seconds.
+            self?.lastManualScroll = Date()
+            return event
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -96,12 +112,15 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
         chapterMenu.action = #selector(chapterChosen)
         voiceMenu.action = #selector(voiceChosen)
         speedMenu.action = #selector(speedChosen)
-        chapterMenu.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        voiceMenu.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // When space runs out, the status line gives way first, then the chapter title.
+        chapterMenu.setContentCompressionResistancePriority(.init(240), for: .horizontal)
+        voiceMenu.setContentCompressionResistancePriority(.init(260), for: .horizontal)
+        voiceMenu.widthAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
+        chapterMenu.widthAnchor.constraint(greaterThanOrEqualToConstant: 80).isActive = true
         status.font = .systemFont(ofSize: 11)
         status.textColor = .secondaryLabelColor
         status.lineBreakMode = .byTruncatingTail
-        status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        status.setContentCompressionResistancePriority(.init(100), for: .horizontal)
 
         let controls = NSStackView(views: [
             icon("backward.fill", "Previous sentence", #selector(previousSentence)),
@@ -109,7 +128,7 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
             icon("forward.fill", "Next sentence", #selector(nextSentence)),
         ])
         controls.spacing = 14
-        let bar = NSStackView(views: [chapterMenu, status, NSView(), controls, NSView(), voiceMenu, speedMenu])
+        let bar = DragStack(views: [chapterMenu, status, NSView(), controls, NSView(), voiceMenu, speedMenu])
         bar.spacing = 10
         bar.edgeInsets = NSEdgeInsets(top: 6, left: 14, bottom: 6, right: 14)
         bar.setHuggingPriority(.defaultHigh, for: .vertical)
@@ -121,16 +140,23 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
         effect.addSubview(bar)
         let line = NSBox()
         line.boxType = .separator
+        // An invisible strip along the top moves the window, where the title bar would be.
+        let grip = DragStrip()
 
-        for v in [web, effect, line, bar] as [NSView] { v.translatesAutoresizingMaskIntoConstraints = false }
-        content.addSubview(web)
+        for v in [page, effect, line, bar, grip] as [NSView] { v.translatesAutoresizingMaskIntoConstraints = false }
+        content.addSubview(page)
         content.addSubview(line)
         content.addSubview(effect)
+        content.addSubview(grip)
         NSLayoutConstraint.activate([
-            web.topAnchor.constraint(equalTo: content.topAnchor),
-            web.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            web.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            web.bottomAnchor.constraint(equalTo: line.topAnchor),
+            page.topAnchor.constraint(equalTo: content.topAnchor),
+            page.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            page.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            page.bottomAnchor.constraint(equalTo: line.topAnchor),
+            grip.topAnchor.constraint(equalTo: content.topAnchor),
+            grip.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 80),
+            grip.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            grip.heightAnchor.constraint(equalToConstant: 28),
             line.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             line.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             line.bottomAnchor.constraint(equalTo: effect.topAnchor),
@@ -143,6 +169,44 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
             bar.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
             effect.heightAnchor.constraint(equalToConstant: 40),
         ])
+        install(surface)
+    }
+
+    private func install(_ new: Surface) {
+        page.subviews.forEach { $0.removeFromSuperview() }
+        let v = new.view
+        v.translatesAutoresizingMaskIntoConstraints = false
+        page.addSubview(v)
+        NSLayoutConstraint.activate([
+            v.topAnchor.constraint(equalTo: page.topAnchor),
+            v.bottomAnchor.constraint(equalTo: page.bottomAnchor),
+            v.leadingAnchor.constraint(equalTo: page.leadingAnchor),
+            v.trailingAnchor.constraint(equalTo: page.trailingAnchor),
+        ])
+        surface = new
+    }
+
+    // MARK: - Status line
+
+    /// Shows a message for a few seconds, then progress again.
+    private func say(_ message: String) {
+        status.stringValue = message
+        messageUntil = Date().addingTimeInterval(5)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.1) { [weak self] in self?.showProgress() }
+    }
+
+    private func showProgress() {
+        guard Date() >= messageUntil, let book else { return }
+        var parts: [String] = []
+        let total = book.chapterCount
+        let unit = book.pdf != nil ? "p." : "ch."
+        parts.append("\(unit) \(chapter + 1)/\(total)")
+        let within = sentences.isEmpty ? 0 : Double(sentence) / Double(sentences.count)
+        parts.append("\(Int(((Double(chapter) + within) / Double(max(total, 1)) * 100).rounded()))%")
+        if let fallbackNote { parts.append(fallbackNote) }
+        if stopAtChapterEnd { parts.append("stops at chapter end") }
+        if let sleepDeadline { parts.append("sleep in \(max(1, Int(sleepDeadline.timeIntervalSinceNow / 60)))m") }
+        status.stringValue = parts.joined(separator: " · ")
     }
 
     // MARK: - Menus
@@ -159,9 +223,9 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
 
     private func rebuildVoiceMenu() {
         let menu = NSMenu()
-        let lang = String((book?.language ?? Locale.current.language.languageCode?.identifier ?? "en").prefix(2))
+        let lang = String((book?.language ?? Locale.current.language.languageCode?.identifier ?? "en").prefix(2)).lowercased()
         let voices = AVSpeechSynthesisVoice.speechVoices()
-            .filter { $0.language.hasPrefix(lang) }
+            .filter { $0.language.lowercased().hasPrefix(lang) || "system:" + $0.identifier == voiceKey }
             .sorted { $0.quality.rawValue != $1.quality.rawValue ? $0.quality.rawValue > $1.quality.rawValue : $0.name < $1.name }
         func add(_ title: String, _ key: String) {
             let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
@@ -172,7 +236,10 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
             menu.addItem(.sectionHeader(title: p.name))
             guard p.voices != nil else { add(p.name, "plugin:" + p.name); continue }
             let prefix = "plugin:" + p.name + "|"
-            let listed = (pluginVoices[p.name] ?? []).filter { ($0.language ?? lang).lowercased().hasPrefix(lang.lowercased()) }
+            // The book's language, plus the chosen voice even if it speaks another one.
+            let listed = (pluginVoices[p.name] ?? []).filter {
+                ($0.language ?? lang).lowercased().hasPrefix(lang) || prefix + $0.id == voiceKey
+            }
             for v in listed {
                 let detail = [v.language, v.gender].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
                 add(detail.isEmpty ? v.name : "\(v.name) — \(detail)", prefix + v.id)
@@ -188,23 +255,22 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
             }
         }
         menu.addItem(.sectionHeader(title: "System voices"))
-        for v in voices {
-            let item = NSMenuItem(title: "\(v.name) — \(v.language)", action: nil, keyEquivalent: "")
-            item.representedObject = "system:" + v.identifier
-            menu.addItem(item)
-        }
+        for v in voices { add("\(v.name) — \(v.language)", "system:" + v.identifier) }
         menu.addItem(.separator())
-        let edit = NSMenuItem(title: "Edit Plugins…", action: nil, keyEquivalent: "")
-        edit.representedObject = "edit-plugins"
-        menu.addItem(edit)
+        for (title, key) in [("Edit Plugins…", "edit-plugins"), ("Edit Skipped Lines…", "edit-skip"),
+                             ("Edit Pronunciations…", "edit-replacements")] {
+            add(title, key)
+        }
         voiceMenu.menu = menu
         let selectable = menu.items.filter { ($0.representedObject as? String)?.contains(":") == true }
         let chosen = selectable.first { $0.representedObject as? String == voiceKey } ?? selectable.first { ($0.representedObject as? String)?.hasPrefix("system:") == true }
         voiceMenu.autoenablesItems = false
         if let chosen { voiceMenu.select(chosen) }
         // The engine follows the menu; the saved choice changes only when the reader picks a voice.
-        if engine != nil && currentVoiceKey != engineKey { engine?.stop(); engine = nil }
+        if engine != nil && fallbackNote == nil && currentVoiceKey != engineKey { restartSentenceIfPlaying() }
     }
+
+    private var currentVoiceKey: String? { voiceMenu.selectedItem?.representedObject as? String }
 
     private func rebuildChapterMenu() {
         let menu = NSMenu()
@@ -218,6 +284,7 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
     }
 
     private func syncChapterMenu() {
+        defer { showProgress(); updateNowPlaying() }
         guard let toc = book?.toc, !toc.isEmpty else { return }
         let here = toc.indices.filter { toc[$0].spineIndex == chapter }
         guard let first = here.first else {
@@ -226,15 +293,19 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
         }
         chapterMenu.selectItem(withTag: first)
         let ids = here.compactMap { toc[$0].fragment }
-        guard here.count > 1, ids.count == here.count, !sentences.isEmpty else { return }
-        let json = String(data: try! JSONSerialization.data(withJSONObject: ids), encoding: .utf8)!
-        web.evaluateJavaScript("earmark.section(\(json))") { [weak self] result, _ in
-            if let i = result as? Int, i >= 0 { self?.chapterMenu.selectItem(withTag: here[i]) }
+        guard here.count > 1, ids.count == here.count, !sentences.isEmpty, surface === webSurface else { return }
+        webSurface.section(ids) { [weak self] i in
+            if let i { self?.chapterMenu.selectItem(withTag: here[i]); self?.updateNowPlaying() }
         }
     }
 
     @objc private func chapterChosen() {
         guard let toc = book?.toc, let tag = chapterMenu.selectedItem?.tag, toc.indices.contains(tag) else { return }
+        go(toTocEntry: tag)
+    }
+
+    private func go(toTocEntry tag: Int) {
+        guard let toc = book?.toc, toc.indices.contains(tag) else { return }
         let entry = toc[tag]
         let autoplay = playing && !paused
         if entry.spineIndex == chapter, let id = entry.fragment, !sentences.isEmpty {
@@ -246,11 +317,10 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
     }
 
     private func jump(toFragment id: String, autoplay: Bool) {
-        let literal = String(data: try! JSONSerialization.data(withJSONObject: [id]), encoding: .utf8)!
-        web.evaluateJavaScript("earmark.sentenceAfter(\(literal)[0])") { [weak self] result, _ in
-            guard let self, let index = result as? Int else { return }
+        webSurface.sentence(after: id) { [weak self] index in
+            guard let self else { return }
             self.engine?.stop()
-            self.sentence = index
+            self.sentence = self.firstReadable(from: index)
             self.highlight(word: nil)
             self.savePosition()
             if autoplay { self.playing = true; self.paused = false; self.updatePlayButton(); self.speakCurrent() }
@@ -259,13 +329,16 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
 
     @objc private func voiceChosen() {
         let key = voiceMenu.selectedItem?.representedObject as? String
-        if key == "edit-plugins" {
+        let files = ["edit-plugins": PluginConfig.file, "edit-skip": TextRules.skipFile, "edit-replacements": TextRules.replacementsFile]
+        if let key, let file = files[key] {
             _ = PluginConfig.load()
-            NSWorkspace.shared.open(PluginConfig.file)
+            rules = TextRules.load()
+            NSWorkspace.shared.open(file)
             rebuildVoiceMenu()
             return
         }
         voiceKey = key
+        fallbackNote = nil
         restartSentenceIfPlaying()
     }
 
@@ -274,9 +347,13 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
         restartSentenceIfPlaying()
     }
 
+    /// Reloads plugins, skipped lines and pronunciations from their files.
     func reloadPlugins() {
         plugins = PluginConfig.load()
+        rules = TextRules.load()
         pluginVoices = [:]
+        fallbackNote = nil
+        if !sentences.isEmpty { skipped = Set(sentences.indices.filter { rules.shouldSkip(sentences[$0]) }) }
         rebuildVoiceMenu()
         for p in plugins where p.voices != nil {
             Task { @MainActor in
@@ -286,9 +363,6 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
             }
         }
     }
-
-    private var currentVoiceKey: String? { voiceMenu.selectedItem?.representedObject as? String }
-    private var engineKey: String?
 
     // MARK: - Book
 
@@ -300,18 +374,20 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
             window?.title = book.title
             NSDocumentController.shared.noteNewRecentDocumentURL(url)
             defaults.set(url.path, forKey: "lastBook")
+            install(book.pdf != nil ? pdfSurface : webSurface)
             rebuildChapterMenu()
             rebuildVoiceMenu()
-            let saved = defaults.dictionary(forKey: "pos." + book.id) as? [String: Int]
-            load(chapter: saved?["chapter"] ?? 0, at: saved?["sentence"] ?? 0, autoplay: false)
-            status.stringValue = ""
+            // Positions are kept by a stable id now; older versions keyed them by file.
+            let saved = defaults.dictionary(forKey: "pos." + book.positionID) ?? defaults.dictionary(forKey: "pos." + book.id)
+            pendingAnchor = saved?["text"] as? String
+            load(chapter: saved?["chapter"] as? Int ?? 0, at: saved?["sentence"] as? Int ?? 0, autoplay: false)
         } catch {
-            status.stringValue = error.localizedDescription
+            say(error.localizedDescription)
         }
     }
 
     private func load(chapter index: Int, at start: Int?, autoplay: Bool) {
-        guard let book, book.spine.indices.contains(index) else { return }
+        guard let book, (0..<book.chapterCount).contains(index) else { return }
         engine?.stop()
         chapter = index
         sentences = []
@@ -320,64 +396,68 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
         paused = false
         updatePlayButton()
         syncChapterMenu()
-        web.loadFileURL(book.spine[index], allowingReadAccessTo: book.root)
+        surface.show(book, chapter: index)
     }
 
     private func savePosition() {
         guard let book else { return }
-        defaults.set(["chapter": chapter, "sentence": sentence], forKey: "pos." + book.id)
+        var pos: [String: Any] = ["chapter": chapter, "sentence": sentence]
+        if sentences.indices.contains(sentence) { pos["text"] = String(sentences[sentence].prefix(40)) }
+        defaults.set(pos, forKey: "pos." + book.positionID)
     }
 
-    // MARK: - Page messages
-
-    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard let body = message.body as? [String: Any], let type = body["type"] as? String else { return }
-        switch type {
-        case "ready":
-            sentences = body["sentences"] as? [String] ?? []
-            if sentences.isEmpty {
-                if playing, let book, chapter + 1 < book.spine.count { load(chapter: chapter + 1, at: 0, autoplay: true) }
-                return
-            }
-            let start = pendingSentence ?? 0
-            sentence = start < 0 ? sentences.count - 1 : min(start, sentences.count - 1)
-            pendingSentence = nil
-            if let id = pendingFragment {
-                pendingFragment = nil
-                jump(toFragment: id, autoplay: playing)
-                return
-            }
-            highlight(word: nil)
-            syncChapterMenu()
-            if playing { speakCurrent() }
-        case "seek":
-            guard let index = body["index"] as? Int else { return }
-            sentence = index
-            highlight(word: nil)
-            savePosition()
-            if playing && !paused { speakCurrent() }
-        default:
-            break
+    private func chapterReady(_ texts: [String]) {
+        sentences = texts
+        skipped = Set(texts.indices.filter { rules.shouldSkip(texts[$0]) })
+        let readable = sentences.indices.filter { !skipped.contains($0) }
+        if readable.isEmpty {
+            // A cover, an image, or only skipped lines: go on if playing.
+            if playing, let book, chapter + 1 < book.chapterCount { load(chapter: chapter + 1, at: 0, autoplay: true) }
+            return
         }
+        var start = pendingSentence ?? 0
+        start = start < 0 ? sentences.count - 1 : min(start, sentences.count - 1)
+        // If the saved sentence's text has moved a little (new splitting rules), find it again.
+        if let anchor = pendingAnchor, !anchor.isEmpty, !sentences[start].hasPrefix(anchor) {
+            let window = max(0, start - 10)...min(sentences.count - 1, start + 10)
+            if let found = window.first(where: { sentences[$0].hasPrefix(anchor) }) { start = found }
+        }
+        pendingAnchor = nil
+        sentence = firstReadable(from: start)
+        pendingSentence = nil
+        if let id = pendingFragment, surface === webSurface {
+            pendingFragment = nil
+            jump(toFragment: id, autoplay: playing)
+            return
+        }
+        pendingFragment = nil
+        highlight(word: nil)
+        syncChapterMenu()
+        if playing { speakCurrent() }
     }
 
-    func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        guard action.navigationType == .linkActivated, let url = action.request.url else {
-            return decisionHandler(.allow)
+    private func seek(chapter target: Int, sentence index: Int) {
+        if target != chapter {
+            load(chapter: target, at: index, autoplay: playing && !paused)
+            return
         }
-        decisionHandler(.cancel)
-        if url.isFileURL, let index = book?.spineIndex(of: url) {
-            load(chapter: index, at: 0, autoplay: playing && !paused)
-        } else if url.scheme?.hasPrefix("http") == true {
-            NSWorkspace.shared.open(url)
-        }
+        engine?.stop()
+        sentence = index
+        highlight(word: nil)
+        savePosition()
+        showProgress()
+        if playing && !paused { speakCurrent() }
+    }
+
+    private func firstReadable(from index: Int, step: Int = 1) -> Int {
+        var i = index
+        while sentences.indices.contains(i) && skipped.contains(i) { i += step }
+        return sentences.indices.contains(i) ? i : index
     }
 
     private func highlight(word: NSRange?) {
-        let w = word ?? NSRange(location: 0, length: 0)
-        web.evaluateJavaScript("window.earmark && earmark.highlight(\(sentence), \(w.location), \(w.length))") { [weak self] _, _ in
-            if let self, word != nil { Debug.logHighlight(self.web) }
-        }
+        let follow = Date().timeIntervalSince(lastManualScroll) > 4
+        surface.highlight(sentence: sentence, word: word.map(toPage), follow: follow)
     }
 
     // MARK: - Playback
@@ -389,41 +469,87 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
         if key.hasPrefix("plugin:") {
             let rest = key.dropFirst("plugin:".count)
             let parts = rest.split(separator: "|", maxSplits: 1).map(String.init)
-            guard let config = plugins.first(where: { $0.name == parts[0] }) else {
-                return SystemEngine(voiceIdentifier: "")
+            if let config = plugins.first(where: { $0.name == parts[0] }) {
+                made = PluginEngine(config: config, voice: parts.count > 1 ? parts[1] : nil)
+            } else {
+                made = SystemEngine(voiceIdentifier: "")
             }
-            made = PluginEngine(config: config, voice: parts.count > 1 ? parts[1] : nil)
         } else {
             made = SystemEngine(voiceIdentifier: String(key.dropFirst("system:".count)))
         }
         engineKey = key
+        wire(made)
+        return made
+    }
+
+    private func wire(_ made: SpeechEngine) {
         made.onWord = { [weak self] range in self?.highlight(word: range) }
         made.onFinish = { [weak self] in self?.advance() }
-        made.onError = { [weak self] message in
-            self?.status.stringValue = message
-            self?.stopSpeaking()
-        }
+        made.onStatus = { [weak self] message in self?.say(message) }
+        made.onError = { [weak self] message in self?.engineFailed(message) }
         engine = made
-        return made
+    }
+
+    /// A plugin voice failed (its server is down): carry on with a system voice for now.
+    private func engineFailed(_ message: String) {
+        guard engine is PluginEngine, fallbackNote == nil else {
+            say(message)
+            stopSpeaking()
+            return
+        }
+        let lang = String((book?.language ?? "en").prefix(2)).lowercased()
+        let voice = AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language.lowercased().hasPrefix(lang) }
+            .max { $0.quality.rawValue < $1.quality.rawValue }
+        let pluginName = currentVoiceKey?.dropFirst("plugin:".count).split(separator: "|").first.map(String.init) ?? "Plugin"
+        fallbackNote = "\(pluginName) not running, using \(voice?.name ?? "system voice")"
+        say(message)
+        wire(SystemEngine(voiceIdentifier: voice?.identifier ?? ""))
+        if playing && !paused { speakCurrent() }
     }
 
     private func speakCurrent() {
         guard sentences.indices.contains(sentence) else { return }
-        status.stringValue = ""
         let engine = makeEngine()
         highlight(word: nil)
-        engine.speak(sentences[sentence], speed: speed)
+        let spoken = rules.spoken(sentences[sentence])
+        toPage = spoken.toPage
+        engine.speak(spoken.text, speed: speed)
         syncChapterMenu()
-        if sentence + 1 < sentences.count { engine.prepare(sentences[sentence + 1], speed: speed) }
+        prepareAhead(engine)
         savePosition()
+    }
+
+    /// Asks the voice for the next two sentences now, including the next chapter's first ones.
+    private func prepareAhead(_ engine: SpeechEngine) {
+        var ahead: [String] = []
+        var i = sentence + 1
+        while ahead.count < 2 && i < sentences.count {
+            if !skipped.contains(i) { ahead.append(sentences[i]) }
+            i += 1
+        }
+        for s in ahead { engine.prepare(rules.spoken(s).text, speed: speed) }
+        guard ahead.count < 2, let book, chapter + 1 < book.chapterCount, !stopAtChapterEnd else { return }
+        let speed = speed, rules = rules
+        surface.upcoming(book, chapter: chapter + 1, count: 4) { [weak engine] texts in
+            for s in texts.filter({ !rules.shouldSkip($0) }).prefix(2 - ahead.count) {
+                engine?.prepare(rules.spoken(s).text, speed: speed)
+            }
+        }
     }
 
     private func advance() {
         guard playing, !paused else { return }
-        if sentence + 1 < sentences.count {
-            sentence += 1
+        var next = sentence + 1
+        while next < sentences.count && skipped.contains(next) { next += 1 }
+        if next < sentences.count {
+            sentence = next
             speakCurrent()
-        } else if let book, chapter + 1 < book.spine.count {
+        } else if stopAtChapterEnd {
+            stopAtChapterEnd = false
+            stopSpeaking()
+            if let book, chapter + 1 < book.chapterCount { load(chapter: chapter + 1, at: 0, autoplay: false) }
+        } else if let book, chapter + 1 < book.chapterCount {
             load(chapter: chapter + 1, at: 0, autoplay: true)
         } else {
             stopSpeaking()
@@ -440,27 +566,31 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
         engine?.stop()
         playing = false
         paused = false
+        cancelSleepTimer()
         updatePlayButton()
     }
 
     private func updatePlayButton() {
         let on = playing && !paused
         playButton.image = NSImage(systemSymbolName: on ? "pause.fill" : "play.fill", accessibilityDescription: on ? "Pause" : "Play")
+        MPNowPlayingInfoCenter.default().playbackState = on ? .playing : (playing ? .paused : .stopped)
     }
 
     @objc func togglePlay() {
         guard let book else { return }
-        if sentences.isEmpty {
-            // A page with nothing to read (a cover, an image): start from the next one.
-            if chapter + 1 < book.spine.count { load(chapter: chapter + 1, at: 0, autoplay: true) }
+        if sentences.indices.allSatisfy({ skipped.contains($0) }) {
+            // Nothing to read here (a cover, an image): start from the next page.
+            if chapter + 1 < book.chapterCount { load(chapter: chapter + 1, at: 0, autoplay: true) }
             return
         }
         if playing && !paused {
             paused = true
+            pausedAt = Date()
             engine?.pause()
         } else if playing && paused {
             paused = false
-            engine?.resume()
+            // After a long break, start the sentence again rather than mid-word.
+            if let pausedAt, Date().timeIntervalSince(pausedAt) > 30 { speakCurrent() } else { engine?.resume() }
         } else {
             playing = true
             paused = false
@@ -473,15 +603,18 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
     @objc func previousSentence() { step(-1) }
 
     private func step(_ delta: Int) {
-        let target = sentence + delta
+        var target = sentence + delta
+        while sentences.indices.contains(target) && skipped.contains(target) { target += delta }
         if sentences.indices.contains(target) {
+            engine?.stop()
             sentence = target
             highlight(word: nil)
             savePosition()
+            showProgress()
             if playing { paused = false; updatePlayButton(); speakCurrent() }
         } else if let book {
             let next = chapter + delta
-            if book.spine.indices.contains(next) { load(chapter: next, at: delta > 0 ? 0 : -1, autoplay: playing) }
+            if (0..<book.chapterCount).contains(next) { load(chapter: next, at: delta > 0 ? 0 : -1, autoplay: playing) }
         }
     }
 
@@ -492,7 +625,45 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
         let current = chapterMenu.selectedItem?.tag ?? 0
         guard let toc = book?.toc, toc.indices.contains(current + delta) else { return }
         chapterMenu.selectItem(withTag: current + delta)
-        chapterChosen()
+        go(toTocEntry: current + delta)
+    }
+
+    /// Asks for a chapter number (or a page number in a PDF) and goes there.
+    @objc func goToChapter() {
+        guard let book, let window else { return }
+        let alert = NSAlert()
+        alert.messageText = book.pdf != nil ? "Go to Page" : "Go to Chapter"
+        alert.informativeText = book.pdf != nil ? "Page number, 1 to \(book.chapterCount)." : "Chapter number, or words from its title."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Go")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            let query = field.stringValue.trimmingCharacters(in: .whitespaces)
+            guard !query.isEmpty else { return }
+            if book.pdf != nil, let n = Int(query) {
+                self.load(chapter: max(0, min(book.chapterCount - 1, n - 1)), at: 0, autoplay: self.playing && !self.paused)
+                return
+            }
+            let toc = book.toc
+            let match: Int?
+            if let n = Int(query) {
+                let number = try? NSRegularExpression(pattern: "(?<![0-9])\(n)(?![0-9])")
+                match = toc.indices.first { i in
+                    number?.firstMatch(in: toc[i].title, range: NSRange(toc[i].title.startIndex..., in: toc[i].title)) != nil
+                } ?? (toc.indices.contains(n - 1) ? n - 1 : nil)
+            } else {
+                match = toc.indices.first { toc[$0].title.localizedCaseInsensitiveContains(query) }
+            }
+            if let match {
+                self.chapterMenu.selectItem(withTag: match)
+                self.go(toTocEntry: match)
+            } else {
+                self.say("No chapter matches “\(query)”")
+            }
+        }
     }
 
     @objc func faster() { nudgeSpeed(1) }
@@ -504,10 +675,89 @@ final class ReaderController: NSWindowController, WKScriptMessageHandler, WKNavi
         speedChosen()
     }
 
-    func debugSnapshot(_ name: String) { Debug.snapshot(window, web, name: name) }
+    // MARK: - Sleep timer
+
+    @objc func sleepTimerChosen(_ sender: NSMenuItem) {
+        cancelSleepTimer()
+        stopAtChapterEnd = false
+        if sender.tag == -1 {
+            stopAtChapterEnd = true
+        } else if sender.tag > 0 {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.playing, !self.paused else { return }
+                self.togglePlay()
+                self.sleepDeadline = nil
+                self.showProgress()
+            }
+            sleepTimer = work
+            sleepDeadline = Date().addingTimeInterval(TimeInterval(sender.tag * 60))
+            DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(sender.tag * 60), execute: work)
+            // Keep the minutes left on the status line current.
+            Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] timer in
+                guard let self, self.sleepDeadline != nil else { return timer.invalidate() }
+                self.showProgress()
+            }
+        }
+        showProgress()
+    }
+
+    private func cancelSleepTimer() {
+        sleepTimer?.cancel()
+        sleepTimer = nil
+        sleepDeadline = nil
+    }
+
+    // MARK: - Media keys and Now Playing
+
+    private func setUpMediaKeys() {
+        let center = MPRemoteCommandCenter.shared()
+        center.togglePlayPauseCommand.addTarget { [weak self] _ in self?.togglePlay(); return .success }
+        center.playCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            if !(self.playing && !self.paused) { self.togglePlay() }
+            return .success
+        }
+        center.pauseCommand.addTarget { [weak self] _ in
+            guard let self else { return .commandFailed }
+            if self.playing && !self.paused { self.togglePlay() }
+            return .success
+        }
+        center.nextTrackCommand.addTarget { [weak self] _ in self?.nextSentence(); return .success }
+        center.previousTrackCommand.addTarget { [weak self] _ in self?.previousSentence(); return .success }
+    }
+
+    private func updateNowPlaying() {
+        guard let book else { return }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = [
+            MPMediaItemPropertyTitle: chapterMenu.selectedItem?.title ?? book.title,
+            MPMediaItemPropertyArtist: book.title,
+        ]
+    }
+
+    func debugSnapshot(_ name: String) {
+        if surface === webSurface { Debug.snapshot(window, webSurface.web, name: name) }
+    }
 
     func shutdown() {
         savePosition()
         engine?.stop()
+    }
+}
+
+/// The control bar: clicks on its empty parts move the window.
+private final class DragStack: NSStackView {
+    override var mouseDownCanMoveWindow: Bool { true }
+}
+
+/// A transparent strip that moves the window (and zooms it on double-click) instead of selecting text.
+private final class DragStrip: NSView {
+    override var mouseDownCanMoveWindow: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 {
+            window?.performZoom(nil)
+        } else {
+            window?.performDrag(with: event)
+        }
     }
 }
