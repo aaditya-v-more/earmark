@@ -14,6 +14,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         tour.start()
     }
 
+    private var installing = false
+
+    @objc func installGoogleVoices(_ sender: Any?) {
+        guard !installing else { return reader.showStatus("Google voices are already installing…") }
+        installing = true
+        reader.showWindow(nil)
+        reader.showStatus("Installing Google voices…")
+        PluginOffer.googleVoices.install(progress: { [weak self] line in
+            self?.reader.showStatus(line)
+        }, done: { [weak self] ok, errors in
+            guard let self else { return }
+            self.installing = false
+            if ok {
+                self.reader.reloadPlugins()
+                self.reader.showStatus("Google voices are ready in the voice menu")
+            } else {
+                let alert = NSAlert()
+                alert.messageText = "Google voices could not be installed"
+                alert.informativeText = errors.trimmingCharacters(in: .whitespacesAndNewlines).suffix(1200).description
+                if let window = self.reader.window { alert.beginSheetModal(for: window) } else { alert.runModal() }
+            }
+        })
+    }
+
+    /// Offers optional plugins once, after the first-run tour if there is one.
+    private func offerPlugins() {
+        PluginOffer.googleVoices.offerOnce(in: reader.window) { [weak self] in self?.installGoogleVoices(nil) }
+    }
+
     @objc func openHelp(_ sender: Any?) {
         NSWorkspace.shared.open(URL(string: "https://github.com/aaditya-v-more/earmark#reading")!)
     }
@@ -45,13 +74,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         // The tour runs once, the first time Earmark opens; Help → Show Tutorial replays it.
-        tour.onEnd = { UserDefaults.standard.set(true, forKey: "tourShown") }
+        tour.onEnd = { [weak self] in
+            UserDefaults.standard.set(true, forKey: "tourShown")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self?.offerPlugins() }
+        }
         if let mode = ProcessInfo.processInfo.environment["EARMARK_DEBUG_TOUR"] {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
                 self?.tour.debugWalk(skip: mode == "skip") { FileHandle.standardError.write(Data(("tour " + $0 + "\n").utf8)) }
             }
         } else if !UserDefaults.standard.bool(forKey: "tourShown") && Debug.dir == nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.tour.start() }
+        } else if Debug.dir == nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.offerPlugins() }
         }
         if !openedAtLaunch, let last = UserDefaults.standard.string(forKey: "lastBook"),
            FileManager.default.fileExists(atPath: last) {
@@ -256,6 +290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ])
         submenu("Help", [
             item("Show Tutorial", #selector(showTutorial(_:)), "", target: self),
+            item("Install Google Voices…", #selector(installGoogleVoices(_:)), "", target: self),
             item("\(appName) Help", #selector(openHelp(_:)), "?", target: self),
         ])
         NSApp.mainMenu = main

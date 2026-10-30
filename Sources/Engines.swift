@@ -97,13 +97,6 @@ struct PluginConfig: Codable {
     {
       "engines": [
         {
-          "name": "Google",
-          "url": "http://127.0.0.1:5591/speak",
-          "voices": "http://127.0.0.1:5591/voices",
-          "start": ["/usr/local/bin/docker", "start", "gtts"],
-          "speed": "engine"
-        },
-        {
           "name": "Piper (example)",
           "command": ["/opt/homebrew/bin/piper", "--model", "/path/to/voice.onnx", "--output_file", "{out}"],
           "speed": "player",

@@ -25,6 +25,7 @@ sed -e "s/VERSION/$VERSION/g" \
     -e "s|com.aadityavmore.earmark<|$ID<|" \
     Resources/Info.plist > "$APP/Contents/Info.plist"
 cp Resources/reader.js Resources/reader.css "$APP/Contents/Resources/"
+mkdir -p "$APP/Contents/Resources/plugins" && cp -R plugins/google-voices "$APP/Contents/Resources/plugins/"
 [ -f Resources/AppIcon.icns ] && cp Resources/AppIcon.icns "$APP/Contents/Resources/"
 
 codesign --force --options runtime --sign "${SIGN_IDENTITY:--}" "$APP"

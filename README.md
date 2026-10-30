@@ -170,6 +170,27 @@ each word as it is spoken, so the word highlight is exact.
 
 Speed runs from 0.75× to 4×. System voices top out at about 3×.
 
+### Google voices
+
+Google's on-device voices from Android and ChromeOS, 51 of them in six
+languages, can be added as a plugin. They include `sfg`, Android's default US
+English voice, which stays clear at high speeds. Earmark offers to install them
+the first time it opens, and **Help → Install Google Voices** does it any time.
+From a terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/aaditya-v-more/earmark/main/plugins/google-voices/install.sh | sh
+```
+
+The installer uses Homebrew to add
+[google-tts-local](https://github.com/aaditya-v-more/google-tts-local), which
+runs Google's speech engine natively on a Mac with Apple silicon. It downloads
+the engine and voices from Google (about 110 MB), starts its voice service at
+login, and adds a **Google** entry to the voice menu, filtered to the book's
+language. Run it again to update google-tts-local. To remove it, run
+`gtts-service uninstall` and `brew uninstall google-tts-local`, then delete the
+Google entry with **Edit Plugins…**.
+
 ## Plugins
 
 Any other text-to-speech engine can be added as a plugin in
@@ -185,10 +206,9 @@ current one plays, so there are no gaps.
 {
   "engines": [
     {
-      "name": "Google",
-      "url": "http://127.0.0.1:5591/speak",
-      "voices": "http://127.0.0.1:5591/voices",
-      "start": ["/usr/local/bin/docker", "start", "gtts"],
+      "name": "My server",
+      "url": "http://127.0.0.1:8000/speak",
+      "voices": "http://127.0.0.1:8000/voices",
       "speed": "engine"
     },
     {
@@ -207,7 +227,7 @@ current one plays, so there are no gaps.
 | `command` | The sentence arrives on stdin. `{out}` is the WAV path to write, and `{text}`, `{rate}` and `{voice}` are also replaced. |
 | `body` | Optional extra fields to send with every request. |
 | `speed` | `engine` passes the speed to the plugin as `rate`. `player` speeds up playback instead, up to 2×. |
-| `start` | Optional. A command that starts the plugin's server, such as `["/usr/local/bin/docker", "start", "gtts"]`. Earmark runs it once if the server can't be reached, then retries. |
+| `start` | Optional. A command that starts the plugin's server, such as `["/opt/homebrew/bin/gtts-service", "install"]`. Earmark runs it once if the server can't be reached, then retries. |
 | `enabled` | `false` hides the plugin. |
 
 If a plugin still can't be reached, Earmark carries on with the best system
@@ -217,12 +237,6 @@ to try the plugin again.
 Plugins return audio only, so Earmark times the words from the audio itself.
 It finds the pauses the voice makes, matches them to the sentence's
 punctuation, and spreads the words between two pauses by syllable count.
-
-The first entry works with
-[google-tts-local](https://github.com/aaditya-v-more/google-tts-local), which
-runs the 51 Google voices from Android and ChromeOS on a Mac, in six
-languages. Start its server and they appear under **Google**, filtered to the
-book's language. Its `sfg` voice is the default US English voice on Android.
 
 ## How it works
 

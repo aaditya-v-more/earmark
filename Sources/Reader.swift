@@ -281,6 +281,9 @@ final class ReaderController: NSWindowController, NSSearchFieldDelegate {
 
     // MARK: - Status line
 
+    /// Shows a message from outside the reader, such as a plugin installer's progress.
+    func showStatus(_ message: String) { say(message) }
+
     /// Shows a message for a few seconds, then progress again.
     private func say(_ message: String) {
         status.stringValue = message
